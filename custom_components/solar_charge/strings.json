@@ -127,22 +127,69 @@
         "data": {
           "pv_power_entities": "Entità di potenza PV",
           "pv_energy_entities": "Entità di energia PV (opzionale)"
+        },
+        "data_description": {
+          "pv_power_entities": "Le entità verranno sommate per ottenere la produzione totale istantanea.",
+          "pv_energy_entities": "Utilizzate solo per statistiche giornaliere/mensili."
         }
       },
       "house": {
-        "$ref": "component::solar_charge::config::step::house"
+        "title": "Consumi di casa e rete",
+        "data": {
+          "house_power_entity": "Potenza consumata dalla casa",
+          "grid_power_entity": "Potenza scambiata con la rete",
+          "grid_export_negative": "Valori negativi = export verso la rete"
+        },
+        "data_description": {
+          "house_power_entity": "Potenza istantanea (W) richiesta dall'intera abitazione.",
+          "grid_power_entity": "Potenza scambiata con la rete (W).",
+          "grid_export_negative": "Abilita se l'entità di rete usa valori negativi quando si esporta."
+        }
       },
       "battery": {
-        "$ref": "component::solar_charge::config::step::battery"
+        "title": "Batteria di casa",
+        "data": {
+          "battery_power_entity": "Potenza di carica/scarica della batteria",
+          "battery_soc_entity": "Stato di carica (SOC)",
+          "battery_charge_positive": "Valori positivi = carica",
+          "battery_capacity_kwh": "Capacità nominale",
+          "battery_min_soc": "SOC minimo protetto",
+          "battery_target_soc": "SOC obiettivo",
+          "battery_max_charge_w": "Potenza massima di carica"
+        }
       },
       "ev": {
-        "$ref": "component::solar_charge::config::step::ev"
+        "title": "Colonnina di ricarica",
+        "data": {
+          "ev_charger_power_entity": "Potenza assorbita dalla wallbox",
+          "ev_charger_status_entity": "Stato wallbox (opzionale)",
+          "ev_set_current_entity": "Entità number per impostare la corrente (A)",
+          "ev_set_power_entity": "Entità number per impostare la potenza (W) (opzionale)",
+          "ev_switch_entity": "Switch abilitazione ricarica (opzionale)",
+          "ev_phases": "Numero fasi",
+          "ev_voltage": "Tensione nominale",
+          "ev_min_current": "Corrente minima di ricarica",
+          "ev_max_current": "Corrente massima di ricarica"
+        }
       },
       "thresholds": {
-        "$ref": "component::solar_charge::config::step::thresholds"
+        "title": "Parametri di bilanciamento",
+        "data": {
+          "default_priority": "Modalità di default",
+          "min_pv_surplus_w": "Surplus PV minimo per avviare ricarica",
+          "hysteresis_w": "Isteresi di regolazione",
+          "overconsumption_threshold_w": "Soglia sovraconsumo",
+          "update_interval": "Intervallo di ricalcolo"
+        }
       },
       "notifications": {
-        "$ref": "component::solar_charge::config::step::notifications"
+        "title": "Notifiche",
+        "data": {
+          "notify_targets": "Canali di notifica",
+          "notify_on_charge_complete": "Notifica a fine ricarica",
+          "notify_on_overconsumption": "Notifica sovraconsumo",
+          "notify_on_mode_change": "Notifica cambio modalità"
+        }
       }
     }
   },
