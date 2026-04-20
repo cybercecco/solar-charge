@@ -1,0 +1,53 @@
+set_mode:
+  name: Imposta modalità
+  description: Cambia la modalità di bilanciamento della ricarica.
+  fields:
+    mode:
+      name: Modalità
+      description: La nuova modalità di bilanciamento.
+      required: true
+      selector:
+        select:
+          options:
+            - "eco"
+            - "balanced"
+            - "boost_car"
+            - "boost_battery"
+            - "fast"
+            - "off"
+    entry_id:
+      name: Entry ID
+      description: (Opzionale) Id della configurazione su cui agire. Se omesso agisce su tutte.
+      required: false
+      selector:
+        text:
+
+boost_car:
+  name: Boost auto
+  description: Attiva la priorità di ricarica sull'auto.
+  fields:
+    entry_id:
+      name: Entry ID
+      required: false
+      selector:
+        text:
+
+boost_battery:
+  name: Boost batteria
+  description: Attiva la priorità di ricarica sulla batteria di casa.
+  fields:
+    entry_id:
+      name: Entry ID
+      required: false
+      selector:
+        text:
+
+reset:
+  name: Reset modalità
+  description: Ripristina la modalità bilanciata.
+  fields:
+    entry_id:
+      name: Entry ID
+      required: false
+      selector:
+        text:
