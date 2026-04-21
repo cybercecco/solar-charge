@@ -26,6 +26,7 @@
         "title": "Solar Charge Balancer",
         "description": "Pick a section to configure. You can come back any time: changes are saved only when you press 'Save & exit'.",
         "menu_options": {
+          "preset": "System preset (auto-detect)",
           "pv": "Solar production",
           "house": "Home & grid consumption",
           "battery": "Home batteries",
@@ -33,6 +34,25 @@
           "thresholds": "Balancing parameters",
           "notifications": "Notifications",
           "save": "Save & exit"
+        }
+      },
+      "preset": {
+        "title": "Solar system preset",
+        "description": "Pick your inverter brand: Home Assistant will be scanned for the standard sensors exposed by the matching integration and they will be proposed as auto-configuration. You can always tweak every field manually afterwards.",
+        "data": {
+          "preset": "System",
+          "battery_capacity_kwh": "Total battery capacity (kWh)"
+        },
+        "data_description": {
+          "preset": "Huawei → huawei_solar (HACS). Other entries use the official same-named integrations.",
+          "battery_capacity_kwh": "Huawei LUNA 2000: 5 kWh per module (2 modules = 10 kWh). Ignore if not applicable."
+        }
+      },
+      "preset_apply": {
+        "title": "Auto-detect result",
+        "description": "System: **{preset_label}**\n{preset_notes}\n\nDetected entities:\n- PV power: {pv}\n- Home consumption: {house}\n- Grid exchange: {grid}\n- Battery power: {battery_power}\n- Battery SOC: {battery_soc}\n- Battery capacity: {battery_capacity}\n\nConfirm to apply. Already-configured values are preserved for fields where the preset found nothing.",
+        "data": {
+          "apply": "Apply this configuration"
         }
       },
       "pv": {

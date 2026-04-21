@@ -51,6 +51,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
+from .presets import PRESET_BY_ID, PRESETS, PresetMatch, match_preset
 from .const import (
     BATTERY_CAPACITY_KWH,
     BATTERY_CHARGE_POSITIVE,
@@ -394,6 +395,8 @@ class SolarChargeOptionsFlow(OptionsFlow):
         # Staging state for the sub-flows
         self._charger_edit_idx: int | None = None
         self._battery_edit_idx: int | None = None
+        self._preset_match: PresetMatch | None = None
+        self._preset_capacity_kwh: float = 0.0
 
     # ------------------------------------------------------------------
     # Main menu
@@ -402,6 +405,7 @@ class SolarChargeOptionsFlow(OptionsFlow):
         return self.async_show_menu(
             step_id="init",
             menu_options=[
+                "preset",
                 "pv",
                 "house",
                 "battery",
@@ -415,6 +419,123 @@ class SolarChargeOptionsFlow(OptionsFlow):
     async def async_step_save(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Persist everything and close the flow."""
         return self.async_create_entry(title="", data=self._data)
+
+    # ------------------------------------------------------------------
+    # Preset wizard (auto-detect for common solar systems)
+    # ------------------------------------------------------------------
+    async def async_step_preset(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Ask the user to pick a known system; scan HA and show matches."""
+        if user_input is not None:
+            preset = PRESET_BY_ID.get(user_input["preset"])
+            if preset is None:
+                return await self.async_step_init()
+            self._preset_capacity_kwh = float(
+                user_input.get("battery_capacity_kwh")
+                or preset.default_battery_capacity_kwh
+                or 0.0
+            )
+            self._preset_match = match_preset(self.hass, preset)
+            return await self.async_step_preset_apply()
+
+        options = [{"value": p.id, "label": p.label} for p in PRESETS]
+        schema = vol.Schema(
+            {
+                vol.Required("preset", default="huawei"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.DROPDOWN
+                    )
+                ),
+                vol.Optional(
+                    "battery_capacity_kwh", default=10.0
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0, max=200, step=0.1, unit_of_measurement="kWh"
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="preset", data_schema=schema)
+
+    async def async_step_preset_apply(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show the auto-detected entities; the user chooses whether to apply."""
+        match = self._preset_match
+        if match is None:
+            return await self.async_step_init()
+
+        if user_input is not None:
+            if user_input.get("apply"):
+                self._apply_preset(match, self._preset_capacity_kwh)
+            self._preset_match = None
+            return await self.async_step_init()
+
+        # Build a read-only summary string that HA shows as `description_placeholders`
+        def _fmt(value: Any) -> str:
+            if not value:
+                return "— (nessun match)"
+            if isinstance(value, list):
+                return "\n        - " + "\n        - ".join(value)
+            return str(value)
+
+        placeholders = {
+            "preset_label": match.preset.label,
+            "preset_notes": match.preset.notes or "—",
+            "pv": _fmt(match.pv_power),
+            "house": _fmt(match.house_power),
+            "grid": _fmt(match.grid_power),
+            "battery_power": _fmt(match.battery_power),
+            "battery_soc": _fmt(match.battery_soc),
+            "battery_capacity": f"{self._preset_capacity_kwh:.1f} kWh",
+        }
+
+        schema = vol.Schema(
+            {vol.Required("apply", default=match.has_any_match): selector.BooleanSelector()}
+        )
+        return self.async_show_form(
+            step_id="preset_apply",
+            data_schema=schema,
+            description_placeholders=placeholders,
+        )
+
+    def _apply_preset(self, match: PresetMatch, capacity_kwh: float) -> None:
+        """Write the matched entities into self._data. Existing values are kept
+        as fallback when the preset found nothing for a given field."""
+        preset = match.preset
+        if match.pv_power:
+            self._data[CONF_PV_POWER_ENTITIES] = match.pv_power
+        if match.house_power:
+            self._data[CONF_HOUSE_POWER_ENTITY] = match.house_power
+        if match.grid_power:
+            self._data[CONF_GRID_POWER_ENTITY] = match.grid_power
+        # Conventions are always updated so the algorithm interprets signs
+        # the right way for the chosen brand.
+        self._data[CONF_GRID_IS_EXPORT_NEGATIVE] = preset.grid_export_negative
+
+        # Create or update a single battery entry from the preset.
+        if match.battery_power or match.battery_soc:
+            batteries = list(self._data.get(CONF_BATTERIES, []) or [])
+            # Prefer updating an existing auto-created battery (same name)
+            auto_name = preset.battery_default_name
+            target_idx = next(
+                (i for i, b in enumerate(batteries) if b.get(BATTERY_NAME) == auto_name),
+                None,
+            )
+            entry = {
+                BATTERY_ID: batteries[target_idx][BATTERY_ID]
+                if target_idx is not None
+                else uuid.uuid4().hex,
+                BATTERY_NAME: auto_name,
+                BATTERY_POWER_ENTITY: match.battery_power,
+                BATTERY_SOC_ENTITY: match.battery_soc,
+                BATTERY_CHARGE_POSITIVE: preset.battery_charge_positive,
+                BATTERY_CAPACITY_KWH: capacity_kwh or preset.default_battery_capacity_kwh,
+            }
+            if target_idx is None:
+                batteries.append(entry)
+            else:
+                batteries[target_idx] = entry
+            self._data[CONF_BATTERIES] = batteries
 
     # ------------------------------------------------------------------
     # PV / House / Battery / Thresholds / Notifications

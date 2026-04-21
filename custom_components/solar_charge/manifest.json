@@ -1,7 +1,7 @@
 {
   "domain": "solar_charge",
   "name": "Solar Charge Balancer",
-  "after_dependencies": ["mqtt", "mobile_app", "notify"],
+  "after_dependencies": ["frontend", "http", "mobile_app", "mqtt", "notify"],
   "codeowners": ["@cybercecco"],
   "config_flow": true,
   "dependencies": [],
@@ -10,5 +10,5 @@
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/cybercecco/solar-charge/issues",
   "requirements": [],
-  "version": "0.3.0"
+  "version": "0.4.0"
 }

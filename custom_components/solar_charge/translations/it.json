@@ -26,6 +26,7 @@
         "title": "Solar Charge Balancer",
         "description": "Scegli una sezione da configurare. Puoi tornare qui in qualsiasi momento: le modifiche vengono salvate solo quando premi 'Salva ed esci'.",
         "menu_options": {
+          "preset": "Preset impianto (auto-rilevamento)",
           "pv": "Produzione fotovoltaica",
           "house": "Consumi di casa e rete",
           "battery": "Batterie di casa",
@@ -33,6 +34,25 @@
           "thresholds": "Parametri di bilanciamento",
           "notifications": "Notifiche",
           "save": "Salva ed esci"
+        }
+      },
+      "preset": {
+        "title": "Preset impianto solare",
+        "description": "Seleziona la marca del tuo sistema: Home Assistant verrà analizzato alla ricerca dei sensori standard della relativa integrazione e verranno proposti come preconfigurazione. Puoi sempre ritoccare i campi a mano nei passaggi successivi.",
+        "data": {
+          "preset": "Sistema",
+          "battery_capacity_kwh": "Capacità totale batteria (kWh)"
+        },
+        "data_description": {
+          "preset": "Huawei → integrazione huawei_solar (HACS). Le altre voci usano le integrazioni ufficiali omonime.",
+          "battery_capacity_kwh": "Per la LUNA 2000: 5 kWh per modulo (2 moduli = 10 kWh). Ignora se non applicabile."
+        }
+      },
+      "preset_apply": {
+        "title": "Risultato dell'auto-rilevamento",
+        "description": "Sistema: **{preset_label}**\n{preset_notes}\n\nEntità rilevate:\n- PV power: {pv}\n- Consumi casa: {house}\n- Scambio con rete: {grid}\n- Potenza batteria: {battery_power}\n- SOC batteria: {battery_soc}\n- Capacità batteria: {battery_capacity}\n\nConferma per applicare la configurazione. I valori già impostati non verranno rimossi se il preset non trova nulla per quel campo.",
+        "data": {
+          "apply": "Applica questa configurazione"
         }
       },
       "pv": {

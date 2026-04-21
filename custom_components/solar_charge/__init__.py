@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import logging
 import uuid
+from pathlib import Path
 
+from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
@@ -48,6 +50,46 @@ from .notify import NotificationDispatcher
 
 _LOGGER = logging.getLogger(__name__)
 
+# Where the bundled Lovelace card is served from. We keep it versioned via a
+# querystring so browsers reload it after an integration update.
+FRONTEND_URL_BASE = "/solar_charge_static"
+FRONTEND_SCRIPT = "solar-charge-card.js"
+FRONTEND_CARD_VERSION = "0.4.0"
+
+
+async def _async_register_frontend(hass: HomeAssistant) -> None:
+    """Serve the bundled Lovelace card and register it as an extra JS module.
+
+    This makes the custom card appear in the Lovelace "Add card" picker
+    without the user having to manually copy files under /config/www or add
+    a resource URL. Works both in storage and YAML dashboard mode.
+    """
+    if hass.data.get(DOMAIN, {}).get("_frontend_registered"):
+        return
+
+    frontend_dir = str(Path(__file__).parent / "frontend")
+
+    # HA 2024.7+ prefers async_register_static_paths; older API is sync.
+    try:
+        from homeassistant.components.http import StaticPathConfig  # type: ignore
+
+        await hass.http.async_register_static_paths(
+            [StaticPathConfig(FRONTEND_URL_BASE, frontend_dir, cache_headers=False)]
+        )
+    except ImportError:
+        await hass.async_add_executor_job(
+            hass.http.register_static_path,
+            FRONTEND_URL_BASE,
+            frontend_dir,
+            False,  # cache_headers
+        )
+
+    add_extra_js_url(
+        hass, f"{FRONTEND_URL_BASE}/{FRONTEND_SCRIPT}?v={FRONTEND_CARD_VERSION}"
+    )
+    hass.data.setdefault(DOMAIN, {})["_frontend_registered"] = True
+    _LOGGER.info("Solar Charge Lovelace card registered at %s", FRONTEND_URL_BASE)
+
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 SET_MODE_SCHEMA = vol.Schema(
@@ -71,6 +113,8 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    await _async_register_frontend(hass)
+
     coordinator = SolarChargeCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
 

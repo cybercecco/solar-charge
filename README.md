@@ -38,19 +38,18 @@ Integrazione **custom per Home Assistant** (2024.4+) per bilanciare in tempo rea
 cd /config
 git clone https://github.com/cybercecco/solar-charge.git
 cp -r solar-charge/custom_components/solar_charge custom_components/
-cp -r solar-charge/www/solar-charge-card www/
 ```
 
-### 3. Card Lovelace
+### 3. Card Lovelace — nessuna configurazione richiesta
 
-Aggiungi la risorsa in *Impostazioni → Dashboards → Risorse*:
+Dalla **v0.4.0** la card viene registrata automaticamente dall'integrazione:
+il file viene servito da `/solar_charge_static/solar-charge-card.js` e
+aggiunto come risorsa "extra JS" del frontend. Dopo il riavvio la
+trovi direttamente in **Modifica dashboard → Aggiungi card → Custom: Solar Charge Card**.
 
-```yaml
-url: /local/solar-charge-card/solar-charge-card.js
-type: module
-```
-
-(Se usi HACS Frontend category la risorsa viene registrata automaticamente.)
+> Se avevi fatto un'installazione manuale della card precedente e hai una
+> risorsa YAML puntata a `/local/solar-charge-card/...`, puoi rimuoverla:
+> ora è ridondante.
 
 ## Configurazione
 
@@ -62,12 +61,27 @@ Subito dopo (o in qualsiasi momento, dal pulsante **Configura**) apri il menu Op
 
 | Sezione | Cosa imposti |
 |---|---|
+| **Preset impianto** | Auto-rilevamento per Huawei (SUN2000 + LUNA 2000), SolarEdge, Fronius, SMA, Enphase, Tesla Powerwall. Riempie PV, consumi, rete, batteria in un colpo solo; puoi ritoccare tutto a mano dopo. |
 | **Produzione fotovoltaica** | Una o più entità di potenza (W). Più inverter/stringhe vengono sommati. |
 | **Consumi di casa e rete** | Consumo casa, scambio rete, segno dell'export. |
-| **Batteria di casa** | Entità potenza/SOC, capacità, SOC min/target, max carica. |
+| **Batterie di casa** | Lista di pacchi: aggiungi, modifica, elimina singolarmente (capacità in kWh per il calcolo della media SOC pesata). Soglie globali (SOC min/target, max carica totale) in sotto-sezione dedicata. |
 | **Colonnine di ricarica** | Lista di wallbox: aggiungi, modifica, elimina singolarmente. Ogni colonnina ha nome, entità, fasi, tensione, I min/max e **priorità**. |
 | **Parametri di bilanciamento** | Modalità default, strategia di distribuzione (`priority`/`equal`/`roundrobin`), surplus minimo, isteresi, soglia sovraconsumo, intervallo. |
 | **Notifiche** | Servizi `notify.*` e quali eventi notificare. |
+
+### Preset supportati (auto-rilevamento)
+
+Ogni preset cerca nell'entity registry le entità standard dell'integrazione corrispondente e le propone come preconfigurazione. Conferma con l'apposito pulsante nella schermata di preview.
+
+| Preset | Integrazione attesa | Batteria di default |
+|---|---|---|
+| Huawei SUN2000 + LUNA 2000 | [huawei_solar](https://github.com/wlcrs/huawei_solar) (HACS) | 10 kWh (2 moduli da 5 kWh) |
+| SolarEdge | `solaredge` ufficiale | StorEdge 9.7 kWh |
+| Fronius GEN24/Symo | `fronius` ufficiale | 10 kWh |
+| SMA Sunny Boy/Tripower | `sma` / `sbfspot` | 7.7 kWh |
+| Enphase Envoy + Encharge | `enphase_envoy` ufficiale | 10.5 kWh |
+| Tesla Powerwall | `powerwall` ufficiale | 13.5 kWh |
+| Generico / manuale | — | — |
 
 Ogni campo mostra un **tooltip descrittivo** (la descrizione è tradotta).
 
