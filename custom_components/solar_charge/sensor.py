@@ -227,12 +227,26 @@ class GlobalSensorEntity(SolarChargeEntity, SensorEntity):
             return None
         return self.entity_description.value_fn(snap)
 
+    # Mapping from sensor key to the name used in `derived_fields`
+    _DERIVED_MAP = {
+        "pv_power": "pv",
+        "house_power": "house",
+        "grid_power": "grid",
+        "battery_power": "battery",
+    }
+
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
         snap = self.coordinator.data
         if snap is None:
             return None
-        return {"mode": snap.mode}
+        attrs: dict[str, Any] = {"mode": snap.mode}
+        derived_key = self._DERIVED_MAP.get(self.entity_description.key)
+        if derived_key is not None:
+            attrs["source"] = (
+                "derived" if derived_key in snap.derived_fields else "measured"
+            )
+        return attrs
 
 
 class ChargerSensorEntity(ChargerEntity, SensorEntity):

@@ -116,6 +116,18 @@ chargers:
 
 *Suggerimento*: le entità per-colonnina usano lo slug del nome che hai dato alla wallbox. Dopo aver configurato le colonnine, controlla in **Sviluppatore → Stati** per trovare gli ID esatti.
 
+## Derivazione automatica dei dati mancanti
+
+L'integrazione applica a ogni ciclo il **bilancio energetico istantaneo**:
+
+```
+House = PV + Grid − Battery
+```
+
+con la convenzione: `Grid > 0` = import, `Battery > 0` = in carica. Se **una** sola delle quattro grandezze (PV, consumo casa, scambio rete, potenza batteria) non è configurata o l'entità restituisce `unavailable`, viene **calcolata automaticamente** dalle altre tre.
+
+Tipico caso d'uso: hai il meter di rete ma nessun sensore esplicito per "consumi casa" → l'integrazione deriva il consumo in tempo reale sapendo produzione, export/import e carica/scarica batteria. Il sensore `sensor.solar_charge_house_power` espone nell'attributo `source` se il valore è `measured` o `derived`, così puoi distinguerli in una card o in un template.
+
 ## Algoritmo (sintesi)
 
 Ad ogni intervallo di update (default 10 s):

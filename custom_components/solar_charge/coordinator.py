@@ -116,6 +116,9 @@ class FlowSnapshot:
     overconsumption: bool = False
     chargers: list[ChargerSnapshot] = field(default_factory=list)
     batteries: list[BatterySnapshot] = field(default_factory=list)
+    # Fields that were computed via energy-balance instead of being measured.
+    # Useful for UIs that want to show a "derived" badge.
+    derived_fields: set[str] = field(default_factory=set)
 
 
 def _as_float(state: State | None) -> float | None:
@@ -213,24 +216,40 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
         hass = self.hass
         snap = FlowSnapshot(mode=self.mode)
 
-        # PV (sum of all configured entities)
-        pv_total = 0.0
-        for eid in self._data.get(CONF_PV_POWER_ENTITIES, []) or []:
+        # ---- PV ----------------------------------------------------------
+        # When at least one PV entity is configured we consider PV measured,
+        # even if individual sensors return None: partial read still counts.
+        pv_entities = self._data.get(CONF_PV_POWER_ENTITIES, []) or []
+        pv_readings: list[float] = []
+        for eid in pv_entities:
             val = _as_float(hass.states.get(eid))
             if val is not None:
-                pv_total += val
-        snap.pv_power = max(0.0, pv_total)
+                pv_readings.append(val)
+        pv_measured: float | None = (
+            sum(pv_readings) if pv_entities and pv_readings else None
+        )
 
-        house_val = _as_float(hass.states.get(self._data.get(CONF_HOUSE_POWER_ENTITY, "") or ""))
-        snap.house_power = max(0.0, house_val or 0.0)
+        # ---- House -------------------------------------------------------
+        house_measured = _as_float(
+            hass.states.get(self._data.get(CONF_HOUSE_POWER_ENTITY, "") or "")
+        )
 
-        grid_val = _as_float(hass.states.get(self._data.get(CONF_GRID_POWER_ENTITY, "") or ""))
-        if grid_val is not None:
+        # ---- Grid --------------------------------------------------------
+        grid_raw = _as_float(
+            hass.states.get(self._data.get(CONF_GRID_POWER_ENTITY, "") or "")
+        )
+        grid_measured: float | None
+        if grid_raw is None:
+            grid_measured = None
+        else:
             export_negative = bool(self._data.get(CONF_GRID_IS_EXPORT_NEGATIVE, True))
-            snap.grid_power = grid_val if export_negative else -grid_val
+            # Normalize to: positive = import, negative = export.
+            grid_measured = grid_raw if export_negative else -grid_raw
 
-        # Home batteries (aggregate across N units)
+        # ---- Batteries (aggregate across N units) ------------------------
         total_batt_power = 0.0
+        any_battery_configured = False
+        any_battery_measured = False
         weighted_soc_sum = 0.0
         weighted_soc_cap = 0.0
         soc_values: list[float] = []
@@ -240,11 +259,14 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
             cap = float(bcfg.get(BATTERY_CAPACITY_KWH) or 0.0)
             b = BatterySnapshot(id=bid, name=bname, capacity_kwh=cap)
 
+            if bcfg.get(BATTERY_POWER_ENTITY):
+                any_battery_configured = True
             pw = _as_float(hass.states.get(bcfg.get(BATTERY_POWER_ENTITY, "") or ""))
             if pw is not None:
                 charge_positive = bool(bcfg.get(BATTERY_CHARGE_POSITIVE, True))
                 b.power = pw if charge_positive else -pw
                 total_batt_power += b.power
+                any_battery_measured = True
 
             soc_v = _as_float(hass.states.get(bcfg.get(BATTERY_SOC_ENTITY, "") or ""))
             if soc_v is not None:
@@ -256,7 +278,16 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
 
             snap.batteries.append(b)
 
-        snap.battery_power = total_batt_power
+        # battery_power: None if configured entities exist but none responded,
+        # 0.0 if user has no batteries at all (legitimate zero, not missing).
+        battery_measured: float | None
+        if any_battery_measured:
+            battery_measured = total_batt_power
+        elif any_battery_configured:
+            battery_measured = None  # configured but unavailable
+        else:
+            battery_measured = 0.0   # no batteries at all
+
         if weighted_soc_cap > 0:
             snap.battery_soc = weighted_soc_sum / weighted_soc_cap
         elif soc_values:
@@ -264,7 +295,8 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
         else:
             snap.battery_soc = None
 
-        # EVs
+        # ---- EV chargers -------------------------------------------------
+        ev_total = 0.0
         for cfg in self.chargers_cfg:
             ch = ChargerSnapshot(
                 id=cfg[CHARGER_ID],
@@ -278,10 +310,103 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
             )
             pw = _as_float(hass.states.get(cfg.get(CHARGER_POWER_ENTITY, "") or ""))
             ch.power = max(0.0, pw or 0.0)
-            snap.ev_power_total += ch.power
+            ev_total += ch.power
             snap.chargers.append(ch)
+        snap.ev_power_total = ev_total
 
+        # ---- Fill the snapshot + derive anything missing -----------------
+        self._finalize_power_fields(
+            snap,
+            pv=pv_measured,
+            house=house_measured,
+            grid=grid_measured,
+            battery=battery_measured,
+        )
         return snap
+
+    # ------------------------------------------------------------------
+    # Energy-balance based derivation
+    # ------------------------------------------------------------------
+    # Fundamental identity (instantaneous, Watts, with signed grid/battery):
+    #
+    #   PV + max(-Battery, 0) + max(Grid, 0) = House + max(Battery, 0) + max(-Grid, 0)
+    #
+    # or equivalently, with signed values:
+    #
+    #   House = PV + Grid - Battery
+    #
+    # where `Grid > 0` means importing from the grid, `Battery > 0` means
+    # charging, and `House` is the total instantaneous consumption of the
+    # home as reported by the house meter, which *includes* any EV charger
+    # installed downstream of it (the normal residential topology). The
+    # downstream EV power is later stripped out inside the balancing
+    # algorithm via `base_house = house - ev_total`.
+    #
+    # From the equation above we can recover any ONE missing quantity
+    # when the other three are measured:
+    #
+    #   House   = PV + Grid - Battery
+    #   PV      = House + Battery - Grid
+    #   Grid    = House + Battery - PV
+    #   Battery = PV + Grid - House
+    @staticmethod
+    def _derive_one_missing(
+        pv: float | None,
+        house: float | None,
+        grid: float | None,
+        battery: float | None,
+    ) -> tuple[float, float, float, float, str | None]:
+        """Return (pv, house, grid, battery, derived_name).
+
+        When exactly one of pv/house/grid/battery is None and the other
+        three are known we solve the balance equation. Otherwise any
+        remaining None is coerced to 0 and nothing is flagged as derived.
+        """
+        missing = [
+            n for n, v in (("pv", pv), ("house", house), ("grid", grid), ("battery", battery))
+            if v is None
+        ]
+        derived: str | None = None
+        if len(missing) == 1:
+            name = missing[0]
+            if name == "house" and pv is not None and grid is not None and battery is not None:
+                house = pv + grid - battery
+                derived = "house"
+            elif name == "grid" and pv is not None and house is not None and battery is not None:
+                grid = house + battery - pv
+                derived = "grid"
+            elif name == "pv" and house is not None and grid is not None and battery is not None:
+                pv = house + battery - grid
+                derived = "pv"
+            elif name == "battery" and pv is not None and house is not None and grid is not None:
+                battery = pv + grid - house
+                derived = "battery"
+
+        return (pv or 0.0, house or 0.0, grid or 0.0, battery or 0.0, derived)
+
+    def _finalize_power_fields(
+        self,
+        snap: FlowSnapshot,
+        *,
+        pv: float | None,
+        house: float | None,
+        grid: float | None,
+        battery: float | None,
+    ) -> None:
+        pv_v, house_v, grid_v, batt_v, derived = self._derive_one_missing(
+            pv, house, grid, battery
+        )
+        snap.pv_power = max(0.0, pv_v)
+        snap.house_power = max(0.0, house_v)
+        snap.grid_power = grid_v
+        snap.battery_power = batt_v
+        if derived:
+            snap.derived_fields.add(derived)
+            _LOGGER.debug(
+                "Derived %s from energy balance: PV=%.0f House=%.0f Grid=%.0f Batt=%.0f EV=%.0f",
+                derived, snap.pv_power, snap.house_power, snap.grid_power,
+                snap.battery_power, snap.ev_power_total,
+            )
 
     # ------------------------------------------------------------------
     def _compute_recommendation(self, snap: FlowSnapshot) -> None:
