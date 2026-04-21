@@ -131,6 +131,24 @@ data:
 
 Stessa forma per `boost_battery`, `reset`, e `set_mode` che accetta `mode: eco|balanced|boost_car|boost_battery|fast|off`.
 
+## Sviluppo
+
+### Validazione locale
+
+Lancia le stesse verifiche della CI direttamente sulla tua macchina:
+
+```bash
+./scripts/validate.sh             # JSON + Python compile + hassfest
+GITHUB_TOKEN=ghp_xxx ./scripts/validate.sh --hacs   # include HACS action
+```
+
+Richiede `python3` e `docker` (solo per i passi hassfest / HACS).
+
+### CI hardening
+
+- Tutte le action in `.github/workflows/validate.yml` sono **pinnate al commit SHA** (con il tag di riferimento nel commento) per resistenza supply-chain.
+- `dependabot.yml` ruota le SHA ogni lunedì alle 06:00 Europe/Rome in un unico PR raggruppato.
+
 ## Traduzioni
 
 I testi del config flow e dei nomi di entità sono localizzati. I file sono in

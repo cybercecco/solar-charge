@@ -1,0 +1,22 @@
+version: 2
+updates:
+  # Keep GitHub Actions pinned SHAs up-to-date. Dependabot will automatically
+  # open PRs whenever a new release of any action referenced in .github/workflows
+  # is published, bumping both the SHA and the trailing version comment.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Rome"
+    labels:
+      - "dependencies"
+      - "ci"
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      actions:
+        patterns:
+          - "*"
