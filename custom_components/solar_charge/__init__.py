@@ -2,19 +2,33 @@
 from __future__ import annotations
 
 import logging
+import uuid
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
 from .const import (
+    CHARGER_ID,
+    CHARGER_MAX_CURRENT,
+    CHARGER_MIN_CURRENT,
+    CHARGER_NAME,
+    CHARGER_PHASES,
+    CHARGER_POWER_ENTITY,
+    CHARGER_PRIORITY,
+    CHARGER_SET_CURRENT_ENTITY,
+    CHARGER_SET_POWER_ENTITY,
+    CHARGER_STATUS_ENTITY,
+    CHARGER_SWITCH_ENTITY,
+    CHARGER_VOLTAGE,
+    CONFIG_VERSION,
+    CONF_CHARGERS,
     DOMAIN,
     MODES,
+    MODE_BALANCED,
     MODE_BOOST_BATTERY,
     MODE_BOOST_CAR,
-    MODE_BALANCED,
     PLATFORMS,
     SERVICE_BOOST_BATTERY,
     SERVICE_BOOST_CAR,
@@ -22,8 +36,8 @@ from .const import (
     SERVICE_SET_MODE,
 )
 from .coordinator import SolarChargeCoordinator
-from .notify import NotificationDispatcher
 from .ev_controller import EvController
+from .notify import NotificationDispatcher
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -50,7 +64,6 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a config entry."""
     coordinator = SolarChargeCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
 
@@ -63,7 +76,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "ev_controller": ev_controller,
     }
 
-    # Start background listeners
     notifier.async_start()
     ev_controller.async_start()
 
@@ -86,6 +98,73 @@ async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     await hass.config_entries.async_reload(entry.entry_id)
 
 
+# ---------------------------------------------------------------------------
+# Migration: 1.x (single wallbox) -> 2.x (chargers list)
+# ---------------------------------------------------------------------------
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    _LOGGER.info(
+        "Migrating Solar Charge entry %s from version %s to %s",
+        entry.entry_id,
+        entry.version,
+        CONFIG_VERSION,
+    )
+
+    if entry.version >= CONFIG_VERSION:
+        return True
+
+    new_data = dict(entry.data)
+    new_options = dict(entry.options or {})
+
+    # Old keys from v1
+    OLD_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
+    OLD_EV_CHARGER_STATUS_ENTITY = "ev_charger_status_entity"
+    OLD_EV_SET_CURRENT_ENTITY = "ev_set_current_entity"
+    OLD_EV_SET_POWER_ENTITY = "ev_set_power_entity"
+    OLD_EV_SWITCH_ENTITY = "ev_switch_entity"
+    OLD_EV_PHASES = "ev_phases"
+    OLD_EV_VOLTAGE = "ev_voltage"
+    OLD_EV_MIN_CURRENT = "ev_min_current"
+    OLD_EV_MAX_CURRENT = "ev_max_current"
+
+    def _extract(src: dict) -> dict | None:
+        if not any(k in src for k in (OLD_EV_CHARGER_POWER_ENTITY, OLD_EV_SET_CURRENT_ENTITY)):
+            return None
+        return {
+            CHARGER_ID: uuid.uuid4().hex,
+            CHARGER_NAME: "Wallbox",
+            CHARGER_POWER_ENTITY: src.pop(OLD_EV_CHARGER_POWER_ENTITY, None),
+            CHARGER_STATUS_ENTITY: src.pop(OLD_EV_CHARGER_STATUS_ENTITY, None),
+            CHARGER_SET_CURRENT_ENTITY: src.pop(OLD_EV_SET_CURRENT_ENTITY, None),
+            CHARGER_SET_POWER_ENTITY: src.pop(OLD_EV_SET_POWER_ENTITY, None),
+            CHARGER_SWITCH_ENTITY: src.pop(OLD_EV_SWITCH_ENTITY, None),
+            CHARGER_PHASES: int(src.pop(OLD_EV_PHASES, 1) or 1),
+            CHARGER_VOLTAGE: int(src.pop(OLD_EV_VOLTAGE, 230) or 230),
+            CHARGER_MIN_CURRENT: int(src.pop(OLD_EV_MIN_CURRENT, 6) or 6),
+            CHARGER_MAX_CURRENT: int(src.pop(OLD_EV_MAX_CURRENT, 16) or 16),
+            CHARGER_PRIORITY: 10,
+        }
+
+    charger_from_data = _extract(new_data)
+    charger_from_opts = _extract(new_options)
+
+    existing = list(new_data.get(CONF_CHARGERS, []) or [])
+    if charger_from_opts:
+        # prefer options since they were the last user-edited config
+        existing.append(charger_from_opts)
+    elif charger_from_data:
+        existing.append(charger_from_data)
+
+    new_data[CONF_CHARGERS] = existing
+
+    hass.config_entries.async_update_entry(
+        entry, data=new_data, options=new_options, version=CONFIG_VERSION
+    )
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Services
+# ---------------------------------------------------------------------------
 def _async_register_services(hass: HomeAssistant) -> None:
     if hass.services.has_service(DOMAIN, SERVICE_SET_MODE):
         return

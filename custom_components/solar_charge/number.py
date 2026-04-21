@@ -1,4 +1,4 @@
-"""Solar Charge Balancer — number platform (runtime-tunable thresholds)."""
+"""Solar Charge Balancer — number platform (runtime-tunable global thresholds)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,13 +20,13 @@ from .entity import SolarChargeEntity
 
 
 @dataclass(frozen=True, kw_only=True)
-class SolarChargeNumberDescription(NumberEntityDescription):
+class NumDesc(NumberEntityDescription):
     getter: Callable[[SolarChargeCoordinator], float]
     setter: Callable[[SolarChargeCoordinator, float], None]
 
 
-NUMBERS: tuple[SolarChargeNumberDescription, ...] = (
-    SolarChargeNumberDescription(
+NUMBERS: tuple[NumDesc, ...] = (
+    NumDesc(
         key="battery_min_soc",
         translation_key="battery_min_soc",
         native_min_value=0,
@@ -37,7 +37,7 @@ NUMBERS: tuple[SolarChargeNumberDescription, ...] = (
         getter=lambda c: c.battery_min_soc,
         setter=lambda c, v: setattr(c, "battery_min_soc", int(v)),
     ),
-    SolarChargeNumberDescription(
+    NumDesc(
         key="battery_target_soc",
         translation_key="battery_target_soc",
         native_min_value=0,
@@ -48,7 +48,7 @@ NUMBERS: tuple[SolarChargeNumberDescription, ...] = (
         getter=lambda c: c.battery_target_soc,
         setter=lambda c, v: setattr(c, "battery_target_soc", int(v)),
     ),
-    SolarChargeNumberDescription(
+    NumDesc(
         key="battery_max_charge_w",
         translation_key="battery_max_charge_w",
         native_min_value=500,
@@ -59,7 +59,7 @@ NUMBERS: tuple[SolarChargeNumberDescription, ...] = (
         getter=lambda c: c.battery_max_charge_w,
         setter=lambda c, v: setattr(c, "battery_max_charge_w", int(v)),
     ),
-    SolarChargeNumberDescription(
+    NumDesc(
         key="min_pv_surplus",
         translation_key="min_pv_surplus",
         native_min_value=0,
@@ -70,7 +70,7 @@ NUMBERS: tuple[SolarChargeNumberDescription, ...] = (
         getter=lambda c: c.min_pv_surplus,
         setter=lambda c, v: setattr(c, "min_pv_surplus", int(v)),
     ),
-    SolarChargeNumberDescription(
+    NumDesc(
         key="hysteresis",
         translation_key="hysteresis",
         native_min_value=0,
@@ -81,7 +81,7 @@ NUMBERS: tuple[SolarChargeNumberDescription, ...] = (
         getter=lambda c: c.hysteresis,
         setter=lambda c, v: setattr(c, "hysteresis", int(v)),
     ),
-    SolarChargeNumberDescription(
+    NumDesc(
         key="overconsumption_w",
         translation_key="overconsumption_w",
         native_min_value=1000,
@@ -103,13 +103,13 @@ async def async_setup_entry(
 
 
 class SolarChargeNumber(SolarChargeEntity, NumberEntity):
-    entity_description: SolarChargeNumberDescription
+    entity_description: NumDesc
 
     def __init__(
         self,
         coordinator: SolarChargeCoordinator,
         entry: ConfigEntry,
-        description: SolarChargeNumberDescription,
+        description: NumDesc,
     ) -> None:
         super().__init__(coordinator, entry, description.key)
         self.entity_description = description

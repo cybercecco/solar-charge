@@ -3,34 +3,64 @@
   "config": {
     "step": {
       "user": {
-        "title": "Produzione fotovoltaica",
-        "description": "Seleziona una o più entità di potenza (W) che misurano la produzione del fotovoltaico. Puoi aggiungerne più di una se hai più stringhe o inverter.",
+        "title": "Solar Charge Balancer",
+        "description": "Attiva l'integrazione con un nome a piacere. Tutte le impostazioni — fotovoltaico, batteria, colonnine, soglie e notifiche — sono configurabili subito dopo, dal pulsante 'Configura'.",
         "data": {
-          "pv_power_entities": "Entità di potenza PV",
-          "pv_energy_entities": "Entità di energia PV (opzionale)"
+          "title": "Nome"
         },
         "data_description": {
-          "pv_power_entities": "Le entità verranno sommate per ottenere la produzione totale istantanea.",
-          "pv_energy_entities": "Utilizzate solo per statistiche giornaliere/mensili, non entrano nel bilancio istantaneo."
+          "title": "Etichetta mostrata su Home Assistant, ad esempio 'Casa' o 'Solare officina'."
+        }
+      }
+    },
+    "error": {
+      "invalid_entity": "Entità non valida."
+    },
+    "abort": {
+      "already_configured": "Configurazione già presente."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Solar Charge Balancer",
+        "description": "Scegli una sezione da configurare. Puoi tornare qui in qualsiasi momento: le modifiche vengono salvate solo quando premi 'Salva ed esci'.",
+        "menu_options": {
+          "pv": "Produzione fotovoltaica",
+          "house": "Consumi di casa e rete",
+          "battery": "Batteria di casa",
+          "chargers": "Colonnine di ricarica",
+          "thresholds": "Parametri di bilanciamento",
+          "notifications": "Notifiche",
+          "save": "Salva ed esci"
+        }
+      },
+      "pv": {
+        "title": "Produzione fotovoltaica",
+        "description": "Seleziona una o più entità di potenza (W). Se hai più inverter o più stringhe, aggiungile tutte: verranno sommate per ottenere la produzione totale.",
+        "data": {
+          "pv_power_entities": "Entità di potenza PV"
+        },
+        "data_description": {
+          "pv_power_entities": "Puoi selezionarne quante ne vuoi. La somma rappresenta la produzione totale istantanea."
         }
       },
       "house": {
         "title": "Consumi di casa e rete",
-        "description": "Indica le entità che misurano il consumo totale dell'abitazione e lo scambio con la rete.",
         "data": {
           "house_power_entity": "Potenza consumata dalla casa",
           "grid_power_entity": "Potenza scambiata con la rete",
           "grid_export_negative": "Valori negativi = export verso la rete"
         },
         "data_description": {
-          "house_power_entity": "Potenza istantanea (W) richiesta dall'intera abitazione.",
+          "house_power_entity": "Potenza istantanea (W) dell'intera abitazione.",
           "grid_power_entity": "Potenza scambiata con la rete (W).",
-          "grid_export_negative": "Abilita se l'entità di rete usa valori negativi quando si esporta."
+          "grid_export_negative": "Abilita se il tuo contatore usa valori negativi in export."
         }
       },
       "battery": {
         "title": "Batteria di casa",
-        "description": "Configurazione della batteria di accumulo (opzionale).",
+        "description": "Se non hai una batteria di accumulo puoi lasciare i campi vuoti.",
         "data": {
           "battery_power_entity": "Potenza carica/scarica batteria",
           "battery_soc_entity": "Stato di carica (SOC)",
@@ -41,46 +71,51 @@
           "battery_max_charge_w": "Potenza massima di carica"
         },
         "data_description": {
-          "battery_power_entity": "Potenza istantanea (W) della batteria.",
-          "battery_soc_entity": "Percentuale di carica attuale (0-100).",
-          "battery_charge_positive": "Abilita se valori positivi indicano carica.",
-          "battery_capacity_kwh": "Usata per stime di autonomia.",
-          "battery_min_soc": "Sotto questa soglia la batteria ha priorità assoluta.",
+          "battery_min_soc": "Sotto questa soglia la batteria ha priorità assoluta sulla ricarica auto.",
           "battery_target_soc": "Sopra questa soglia il surplus va all'auto.",
-          "battery_max_charge_w": "Potenza massima con cui l'inverter carica la batteria."
+          "battery_max_charge_w": "Potenza massima con cui l'inverter può caricare la batteria."
         }
       },
-      "ev": {
-        "title": "Colonnina di ricarica",
-        "description": "Configura misura e controllo della wallbox.",
+      "chargers": {
+        "title": "Colonnine di ricarica",
+        "description": "Aggiungi, modifica o elimina le wallbox. Ogni colonnina ha entità e priorità proprie.",
         "data": {
-          "ev_charger_power_entity": "Potenza assorbita wallbox",
-          "ev_charger_status_entity": "Stato wallbox (opzionale)",
-          "ev_set_current_entity": "Entità number per impostare la corrente (A)",
-          "ev_set_power_entity": "Entità number per impostare la potenza (W) (opzionale)",
-          "ev_switch_entity": "Switch abilitazione ricarica (opzionale)",
-          "ev_phases": "Numero fasi",
-          "ev_voltage": "Tensione nominale",
-          "ev_min_current": "Corrente minima",
-          "ev_max_current": "Corrente massima"
+          "action": "Operazione"
+        }
+      },
+      "charger_form": {
+        "title": "Configura colonnina",
+        "description": "Le tue impostazioni valgono solo per questa colonnina. L'algoritmo alloca la corrente in base alla priorità e alla strategia globale.",
+        "data": {
+          "name": "Nome colonnina",
+          "power_entity": "Potenza assorbita (W)",
+          "status_entity": "Stato (opzionale)",
+          "set_current_entity": "Entità number per la corrente (A)",
+          "set_power_entity": "Entità number per la potenza (W) (opzionale)",
+          "switch_entity": "Switch abilitazione ricarica (opzionale)",
+          "phases": "Fasi",
+          "voltage": "Tensione nominale",
+          "min_current": "Corrente minima",
+          "max_current": "Corrente massima",
+          "priority": "Priorità (1 = più alta)"
         },
         "data_description": {
-          "ev_charger_power_entity": "Potenza erogata al veicolo (W).",
-          "ev_charger_status_entity": "Stato usato per rilevare la fine ricarica.",
-          "ev_set_current_entity": "Entità number.* per scrivere la corrente richiesta.",
-          "ev_set_power_entity": "Alternativa in W se non esiste la corrente.",
-          "ev_switch_entity": "Switch che abilita/disabilita la ricarica.",
-          "ev_phases": "1 monofase, 3 trifase.",
-          "ev_voltage": "Tensione di riferimento (es. 230 V).",
-          "ev_min_current": "Tipicamente 6 A sugli EV.",
-          "ev_max_current": "Limite massimo della presa/auto."
+          "name": "Etichetta mostrata nelle entità, ad es. 'Garage' o 'Salotto'.",
+          "power_entity": "Potenza istantanea erogata al veicolo.",
+          "set_current_entity": "Number.* su cui scrivere la corrente di ricarica.",
+          "set_power_entity": "Alternativa in W se non è disponibile il number in ampere.",
+          "switch_entity": "Switch che abilita/disabilita la ricarica.",
+          "phases": "1 = monofase (P=V·I), 3 = trifase (P=V·I·√3).",
+          "min_current": "Tipicamente 6 A per EV.",
+          "max_current": "Limite della presa/cavo/auto.",
+          "priority": "A parità di mode, priorità più bassa (numero minore) viene servita prima."
         }
       },
       "thresholds": {
         "title": "Parametri di bilanciamento",
-        "description": "Regola l'algoritmo e la modalità di default.",
         "data": {
           "default_priority": "Modalità di default",
+          "charger_distribution": "Distribuzione tra colonnine",
           "min_pv_surplus_w": "Surplus PV minimo",
           "hysteresis_w": "Isteresi",
           "overconsumption_threshold_w": "Soglia sovraconsumo",
@@ -88,15 +123,16 @@
         },
         "data_description": {
           "default_priority": "Modalità iniziale e di reset.",
-          "min_pv_surplus_w": "Soglia di surplus per iniziare la ricarica auto.",
+          "charger_distribution": "Come ripartire la potenza totale EV tra le colonnine configurate.",
+          "min_pv_surplus_w": "Soglia di surplus per iniziare la ricarica.",
           "hysteresis_w": "Banda morta per evitare oscillazioni.",
-          "overconsumption_threshold_w": "Soglia totale oltre cui inviare allarme.",
-          "update_interval": "Frequenza (secondi) del ricalcolo."
+          "overconsumption_threshold_w": "Soglia totale per l'allarme sovraconsumo.",
+          "update_interval": "Frequenza di ricalcolo in secondi."
         }
       },
       "notifications": {
         "title": "Notifiche",
-        "description": "Canali e eventi da notificare.",
+        "description": "Scegli i canali notify.* e quali eventi notificare.",
         "data": {
           "notify_targets": "Canali di notifica",
           "notify_on_charge_complete": "Notifica fine ricarica",
@@ -104,36 +140,27 @@
           "notify_on_mode_change": "Notifica cambio modalità"
         },
         "data_description": {
-          "notify_targets": "Nome dei servizi notify.* (es. 'mobile_app_pixel', 'telegram').",
-          "notify_on_charge_complete": "Avviso a fine ricarica.",
-          "notify_on_overconsumption": "Allarme oltre soglia.",
-          "notify_on_mode_change": "Avviso ad ogni cambio modalità."
+          "notify_targets": "Nomi dei servizi notify, es. 'mobile_app_pixel' o 'telegram'."
         }
       }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Produzione fotovoltaica",
-        "data": {"pv_power_entities": "Entità PV", "pv_energy_entities": "Entità energia"}
-      },
-      "house": {"title": "Casa e rete", "data": {"house_power_entity": "Consumo casa", "grid_power_entity": "Scambio rete", "grid_export_negative": "Export negativo"}},
-      "battery": {"title": "Batteria"},
-      "ev": {"title": "Colonnina"},
-      "thresholds": {"title": "Parametri"},
-      "notifications": {"title": "Notifiche"}
     }
   },
   "selector": {
     "mode": {
       "options": {
-        "eco": "Eco — solo surplus",
+        "eco": "Eco — solo surplus solare",
         "balanced": "Bilanciato",
         "boost_car": "Boost auto",
         "boost_battery": "Boost batteria",
         "fast": "Ricarica rapida",
         "off": "Spento"
+      }
+    },
+    "distribution": {
+      "options": {
+        "priority": "Per priorità (greedy)",
+        "equal": "Equa tra tutte",
+        "roundrobin": "Round robin"
       }
     }
   },
@@ -144,16 +171,19 @@
       "grid_power": {"name": "Scambio rete"},
       "battery_power": {"name": "Potenza batteria"},
       "battery_soc": {"name": "SOC batteria"},
-      "ev_power": {"name": "Potenza colonnina"},
+      "ev_power_total": {"name": "Potenza EV totale"},
       "surplus": {"name": "Surplus disponibile"},
-      "recommended_ev_power": {"name": "Potenza EV consigliata"},
-      "recommended_ev_current": {"name": "Corrente EV consigliata"},
-      "battery_allocation": {"name": "Allocazione batteria"}
+      "recommended_ev_power_total": {"name": "EV consigliata totale"},
+      "battery_allocation": {"name": "Allocazione batteria"},
+      "charger_power": {"name": "Potenza"},
+      "charger_recommended_power": {"name": "Potenza consigliata"},
+      "charger_recommended_current": {"name": "Corrente consigliata"}
     },
     "binary_sensor": {
       "overconsumption": {"name": "Sovraconsumo"},
-      "ev_charging": {"name": "Ricarica in corso"},
-      "exporting": {"name": "Export attivo"}
+      "exporting": {"name": "Export attivo"},
+      "any_charging": {"name": "Ricarica in corso"},
+      "charger_charging": {"name": "In ricarica"}
     },
     "number": {
       "battery_min_soc": {"name": "SOC minimo batteria"},
@@ -164,12 +194,12 @@
       "overconsumption_w": {"name": "Soglia sovraconsumo"}
     },
     "switch": {
-      "boost_car": {"name": "Boost auto"},
-      "boost_battery": {"name": "Boost batteria"}
+      "boost_battery": {"name": "Boost batteria"},
+      "charger_boost": {"name": "Boost"}
     },
     "select": {
       "mode": {
-        "name": "Modalità",
+        "name": "Modalità di bilanciamento",
         "state": {
           "eco": "Eco",
           "balanced": "Bilanciato",
@@ -177,6 +207,14 @@
           "boost_battery": "Boost batteria",
           "fast": "Rapida",
           "off": "Spento"
+        }
+      },
+      "distribution": {
+        "name": "Distribuzione colonnine",
+        "state": {
+          "priority": "Per priorità",
+          "equal": "Equa",
+          "roundrobin": "Round robin"
         }
       }
     }
@@ -186,12 +224,12 @@
       "name": "Imposta modalità",
       "description": "Cambia la modalità di bilanciamento.",
       "fields": {
-        "mode": {"name": "Modalità", "description": "Nuova modalità."},
+        "mode": {"name": "Modalità", "description": "La nuova modalità."},
         "entry_id": {"name": "Entry ID", "description": "Opzionale."}
       }
     },
     "boost_car": {"name": "Boost auto", "description": "Priorità ricarica auto."},
     "boost_battery": {"name": "Boost batteria", "description": "Priorità batteria di casa."},
-    "reset": {"name": "Reset", "description": "Ripristina modalità bilanciata."}
+    "reset": {"name": "Reset", "description": "Ripristina bilanciato."}
   }
 }

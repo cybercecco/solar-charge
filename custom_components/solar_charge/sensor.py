@@ -1,4 +1,4 @@
-"""Solar Charge Balancer — sensor platform."""
+"""Solar Charge Balancer — sensor platform (global + per-charger)."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,18 +19,21 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
-from .coordinator import FlowSnapshot, SolarChargeCoordinator
-from .entity import SolarChargeEntity
+from .const import CHARGER_ID, CHARGER_NAME, CONF_CHARGERS, DOMAIN
+from .coordinator import ChargerSnapshot, FlowSnapshot, SolarChargeCoordinator
+from .entity import ChargerEntity, SolarChargeEntity
 
 
+# ---------------------------------------------------------------------------
+# Global sensors
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True, kw_only=True)
-class SolarChargeSensorDescription(SensorEntityDescription):
+class GlobalSensor(SensorEntityDescription):
     value_fn: Callable[[FlowSnapshot], Any]
 
 
-SENSORS: tuple[SolarChargeSensorDescription, ...] = (
-    SolarChargeSensorDescription(
+GLOBAL_SENSORS: tuple[GlobalSensor, ...] = (
+    GlobalSensor(
         key="pv_power",
         translation_key="pv_power",
         device_class=SensorDeviceClass.POWER,
@@ -38,7 +41,7 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         value_fn=lambda s: s.pv_power,
     ),
-    SolarChargeSensorDescription(
+    GlobalSensor(
         key="house_power",
         translation_key="house_power",
         device_class=SensorDeviceClass.POWER,
@@ -46,7 +49,7 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         value_fn=lambda s: s.house_power,
     ),
-    SolarChargeSensorDescription(
+    GlobalSensor(
         key="grid_power",
         translation_key="grid_power",
         device_class=SensorDeviceClass.POWER,
@@ -54,7 +57,7 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         value_fn=lambda s: s.grid_power,
     ),
-    SolarChargeSensorDescription(
+    GlobalSensor(
         key="battery_power",
         translation_key="battery_power",
         device_class=SensorDeviceClass.POWER,
@@ -62,7 +65,7 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         value_fn=lambda s: s.battery_power,
     ),
-    SolarChargeSensorDescription(
+    GlobalSensor(
         key="battery_soc",
         translation_key="battery_soc",
         device_class=SensorDeviceClass.BATTERY,
@@ -70,15 +73,15 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         value_fn=lambda s: s.battery_soc,
     ),
-    SolarChargeSensorDescription(
-        key="ev_power",
-        translation_key="ev_power",
+    GlobalSensor(
+        key="ev_power_total",
+        translation_key="ev_power_total",
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
-        value_fn=lambda s: s.ev_power,
+        value_fn=lambda s: s.ev_power_total,
     ),
-    SolarChargeSensorDescription(
+    GlobalSensor(
         key="surplus",
         translation_key="surplus",
         device_class=SensorDeviceClass.POWER,
@@ -86,23 +89,15 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         value_fn=lambda s: s.surplus,
     ),
-    SolarChargeSensorDescription(
-        key="recommended_ev_power",
-        translation_key="recommended_ev_power",
+    GlobalSensor(
+        key="recommended_ev_power_total",
+        translation_key="recommended_ev_power_total",
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfPower.WATT,
-        value_fn=lambda s: s.recommended_ev_power,
+        value_fn=lambda s: s.recommended_ev_power_total,
     ),
-    SolarChargeSensorDescription(
-        key="recommended_ev_current",
-        translation_key="recommended_ev_current",
-        device_class=SensorDeviceClass.CURRENT,
-        state_class=SensorStateClass.MEASUREMENT,
-        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
-        value_fn=lambda s: s.recommended_ev_current,
-    ),
-    SolarChargeSensorDescription(
+    GlobalSensor(
         key="battery_allocation",
         translation_key="battery_allocation",
         device_class=SensorDeviceClass.POWER,
@@ -113,21 +108,66 @@ SENSORS: tuple[SolarChargeSensorDescription, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Per-charger sensors
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, kw_only=True)
+class ChargerSensor(SensorEntityDescription):
+    value_fn: Callable[[ChargerSnapshot], Any]
+
+
+CHARGER_SENSORS: tuple[ChargerSensor, ...] = (
+    ChargerSensor(
+        key="power",
+        translation_key="charger_power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        value_fn=lambda c: c.power,
+    ),
+    ChargerSensor(
+        key="recommended_power",
+        translation_key="charger_recommended_power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        value_fn=lambda c: c.recommended_power,
+    ),
+    ChargerSensor(
+        key="recommended_current",
+        translation_key="charger_recommended_current",
+        device_class=SensorDeviceClass.CURRENT,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
+        value_fn=lambda c: c.recommended_current,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     coord: SolarChargeCoordinator = hass.data[DOMAIN][entry.entry_id]["coordinator"]
-    async_add_entities(SolarChargeSensor(coord, entry, d) for d in SENSORS)
+    entities: list[Any] = [GlobalSensorEntity(coord, entry, d) for d in GLOBAL_SENSORS]
+    merged: dict[str, Any] = {**entry.data, **(entry.options or {})}
+    for cfg in merged.get(CONF_CHARGERS, []) or []:
+        if CHARGER_ID not in cfg:
+            continue
+        cid = cfg[CHARGER_ID]
+        cname = cfg.get(CHARGER_NAME, cid)
+        for desc in CHARGER_SENSORS:
+            entities.append(ChargerSensorEntity(coord, entry, cid, cname, desc))
+    async_add_entities(entities)
 
 
-class SolarChargeSensor(SolarChargeEntity, SensorEntity):
-    entity_description: SolarChargeSensorDescription
+class GlobalSensorEntity(SolarChargeEntity, SensorEntity):
+    entity_description: GlobalSensor
 
     def __init__(
         self,
         coordinator: SolarChargeCoordinator,
         entry: ConfigEntry,
-        description: SolarChargeSensorDescription,
+        description: GlobalSensor,
     ) -> None:
         super().__init__(coordinator, entry, description.key)
         self.entity_description = description
@@ -145,3 +185,41 @@ class SolarChargeSensor(SolarChargeEntity, SensorEntity):
         if snap is None:
             return None
         return {"mode": snap.mode}
+
+
+class ChargerSensorEntity(ChargerEntity, SensorEntity):
+    entity_description: ChargerSensor
+
+    def __init__(
+        self,
+        coordinator: SolarChargeCoordinator,
+        entry: ConfigEntry,
+        charger_id: str,
+        charger_name: str,
+        description: ChargerSensor,
+    ) -> None:
+        super().__init__(coordinator, entry, charger_id, charger_name, description.key)
+        self.entity_description = description
+
+    def _find(self) -> ChargerSnapshot | None:
+        snap = self.coordinator.data
+        if snap is None:
+            return None
+        for c in snap.chargers:
+            if c.id == self._charger_id:
+                return c
+        return None
+
+    @property
+    def native_value(self) -> Any:
+        ch = self._find()
+        if ch is None:
+            return None
+        return self.entity_description.value_fn(ch)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        ch = self._find()
+        if ch is None:
+            return None
+        return {"priority": ch.priority, "boost": ch.boost}

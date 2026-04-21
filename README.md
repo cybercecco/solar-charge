@@ -8,17 +8,19 @@ Integrazione **custom per Home Assistant** (2024.4+) per bilanciare in tempo rea
 
 ## Caratteristiche
 
+- **Installazione lineare**: l'integrazione si crea con un solo click (solo un nome). Entità, batteria, colonnine, soglie e notifiche si configurano **dopo**, dal pulsante "Configura", in qualsiasi momento.
 - **Algoritmo di bilanciamento** con 6 modalità: `eco`, `balanced`, `boost_car`, `boost_battery`, `fast`, `off`.
 - **Multi-inverter**: somma di più entità di produzione PV.
+- **Colonnine multiple**: supporta N wallbox, ognuna con entità e **priorità** proprie. Strategia di distribuzione selezionabile (`priority`, `equal`, `roundrobin`).
+- **Boost per colonnina**: ogni wallbox ha il proprio `switch` di boost che la porta in priorità massima.
 - **Batteria di casa**: priorità sotto il SOC minimo, target configurabile, potenza massima di carica.
 - **Controllo wallbox**: regola corrente (A) o potenza (W) tramite le entità `number.*` della tua wallbox.
-- **Boost auto / boost batteria** con un click (switch + servizi).
-- **Notifiche** su canali a scelta (`mobile_app_*`, `telegram`, `email`, `persistent_notification`, ecc.):
-  - fine ricarica;
+- **Notifiche per-colonnina** su canali a scelta (`mobile_app_*`, `telegram`, `email`, `persistent_notification`, ecc.):
+  - fine ricarica **per ciascuna wallbox**;
   - allarme sovraconsumo (soglia impostabile);
   - cambio modalità (opzionale).
-- **Card Lovelace** custom con balloon stile Tesla, linee di flusso animate e pulsanti di boost.
-- **Config flow multi-step** con tooltip in ogni campo e **traduzioni IT/EN** (facile aggiungerne altre).
+- **Card Lovelace** custom con balloon stile Tesla, linee di flusso animate e tile per ogni colonnina.
+- **Options flow a menu** con tooltip e **traduzioni IT/EN**.
 - **Servizi**: `solar_charge.set_mode`, `solar_charge.boost_car`, `solar_charge.boost_battery`, `solar_charge.reset`.
 
 ## Installazione
@@ -54,16 +56,18 @@ type: module
 
 *Impostazioni → Dispositivi & Servizi → Aggiungi integrazione → Solar Charge Balancer*.
 
-Il wizard ti guiderà in 6 step:
+Al primo step ti viene chiesto solo il **nome** dell'istanza. Premi "Invia" e l'integrazione è attiva.
 
-| Step | Cosa imposti |
+Subito dopo (o in qualsiasi momento, dal pulsante **Configura**) apri il menu Options con queste sezioni indipendenti:
+
+| Sezione | Cosa imposti |
 |---|---|
-| **1 — Fotovoltaico** | Una o più entità di potenza (W) della produzione PV |
-| **2 — Casa & Rete** | Consumo casa, scambio rete, segno dell'export |
-| **3 — Batteria** | Entità potenza/SOC, capacità, SOC min/target, max carica |
-| **4 — Colonnina** | Potenza wallbox, number A/W, switch enable, fasi, tensione, I min/max |
-| **5 — Parametri** | Modalità default, surplus minimo, isteresi, soglia sovraconsumo, intervallo |
-| **6 — Notifiche** | Servizi notify.* e quali eventi notificare |
+| **Produzione fotovoltaica** | Una o più entità di potenza (W). Più inverter/stringhe vengono sommati. |
+| **Consumi di casa e rete** | Consumo casa, scambio rete, segno dell'export. |
+| **Batteria di casa** | Entità potenza/SOC, capacità, SOC min/target, max carica. |
+| **Colonnine di ricarica** | Lista di wallbox: aggiungi, modifica, elimina singolarmente. Ogni colonnina ha nome, entità, fasi, tensione, I min/max e **priorità**. |
+| **Parametri di bilanciamento** | Modalità default, strategia di distribuzione (`priority`/`equal`/`roundrobin`), surplus minimo, isteresi, soglia sovraconsumo, intervallo. |
+| **Notifiche** | Servizi `notify.*` e quali eventi notificare. |
 
 Ogni campo mostra un **tooltip descrittivo** (la descrizione è tradotta).
 
@@ -72,17 +76,31 @@ Ogni campo mostra un **tooltip descrittivo** (la descrizione è tradotta).
 ```yaml
 type: custom:solar-charge-card
 title: Casa & Auto
-pv_entity: sensor.solar_charge_balancer_pv_power
-house_entity: sensor.solar_charge_balancer_house_load
-grid_entity: sensor.solar_charge_balancer_grid_exchange
-battery_entity: sensor.solar_charge_balancer_battery_power
-battery_soc_entity: sensor.solar_charge_balancer_battery_soc
-ev_entity: sensor.solar_charge_balancer_wallbox_power
-ev_recommended_entity: sensor.solar_charge_balancer_recommended_ev_power
-mode_entity: select.solar_charge_balancer_balancing_mode
-boost_car_entity: switch.solar_charge_balancer_boost_car
-boost_battery_entity: switch.solar_charge_balancer_boost_battery
+pv_entity: sensor.solar_charge_pv_power
+house_entity: sensor.solar_charge_house_power
+grid_entity: sensor.solar_charge_grid_power
+battery_entity: sensor.solar_charge_battery_power
+battery_soc_entity: sensor.solar_charge_battery_soc
+ev_entity: sensor.solar_charge_ev_power_total
+ev_recommended_entity: sensor.solar_charge_recommended_ev_power_total
+mode_entity: select.solar_charge_balancing_mode
+boost_battery_entity: switch.solar_charge_boost_battery
+chargers:
+  - name: Garage
+    power_entity: sensor.solar_charge_garage_power
+    recommended_power_entity: sensor.solar_charge_garage_recommended_power
+    recommended_current_entity: sensor.solar_charge_garage_recommended_current
+    charging_entity: binary_sensor.solar_charge_garage_charging
+    boost_entity: switch.solar_charge_garage_boost
+  - name: Officina
+    power_entity: sensor.solar_charge_officina_power
+    recommended_power_entity: sensor.solar_charge_officina_recommended_power
+    recommended_current_entity: sensor.solar_charge_officina_recommended_current
+    charging_entity: binary_sensor.solar_charge_officina_charging
+    boost_entity: switch.solar_charge_officina_boost
 ```
+
+*Suggerimento*: le entità per-colonnina usano lo slug del nome che hai dato alla wallbox. Dopo aver configurato le colonnine, controlla in **Sviluppatore → Stati** per trovare gli ID esatti.
 
 ## Algoritmo (sintesi)
 

@@ -3,37 +3,67 @@
   "config": {
     "step": {
       "user": {
-        "title": "Photovoltaic production",
-        "description": "Select one or more power (W) entities that measure your PV production. Add more than one if you have multiple strings or inverters.",
+        "title": "Solar Charge Balancer",
+        "description": "Activate the integration with a friendly name. All settings — PV, battery, chargers, thresholds and notifications — are configured right after from the 'Configure' button.",
         "data": {
-          "pv_power_entities": "PV power entities",
-          "pv_energy_entities": "PV energy entities (optional)"
+          "title": "Name"
         },
         "data_description": {
-          "pv_power_entities": "All selected entities are summed to compute total instantaneous production.",
-          "pv_energy_entities": "Used only for daily/monthly statistics, not for real-time balancing."
+          "title": "Label shown in Home Assistant, e.g. 'Home' or 'Workshop solar'."
+        }
+      }
+    },
+    "error": {
+      "invalid_entity": "Invalid entity."
+    },
+    "abort": {
+      "already_configured": "Already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Solar Charge Balancer",
+        "description": "Pick a section to configure. You can come back any time: changes are saved only when you press 'Save & exit'.",
+        "menu_options": {
+          "pv": "Solar production",
+          "house": "Home & grid consumption",
+          "battery": "Home battery",
+          "chargers": "EV chargers",
+          "thresholds": "Balancing parameters",
+          "notifications": "Notifications",
+          "save": "Save & exit"
+        }
+      },
+      "pv": {
+        "title": "Solar production",
+        "description": "Select one or more power (W) entities. If you have multiple inverters or strings, add them all: they will be summed to obtain the total production.",
+        "data": {
+          "pv_power_entities": "PV power entities"
+        },
+        "data_description": {
+          "pv_power_entities": "Add as many as you need. The sum represents the instantaneous total production."
         }
       },
       "house": {
-        "title": "House & grid consumption",
-        "description": "Entities measuring total home consumption and grid exchange.",
+        "title": "Home & grid consumption",
         "data": {
-          "house_power_entity": "House power consumption",
-          "grid_power_entity": "Grid power exchange",
+          "house_power_entity": "Whole home power",
+          "grid_power_entity": "Grid exchange power",
           "grid_export_negative": "Negative values = export to grid"
         },
         "data_description": {
-          "house_power_entity": "Real-time power (W) drawn by the whole house.",
+          "house_power_entity": "Instantaneous (W) power of the whole house.",
           "grid_power_entity": "Power exchanged with the grid (W).",
-          "grid_export_negative": "Enable if your meter uses negative values when exporting."
+          "grid_export_negative": "Enable if your meter uses negative values on export."
         }
       },
       "battery": {
         "title": "Home battery",
-        "description": "Home storage battery configuration (optional).",
+        "description": "If you don't have a battery storage you can leave these fields empty.",
         "data": {
           "battery_power_entity": "Battery charge/discharge power",
-          "battery_soc_entity": "State of charge",
+          "battery_soc_entity": "State of charge (SOC)",
           "battery_charge_positive": "Positive values = charging",
           "battery_capacity_kwh": "Nominal capacity",
           "battery_min_soc": "Protected minimum SOC",
@@ -41,128 +71,117 @@
           "battery_max_charge_w": "Max charge power"
         },
         "data_description": {
-          "battery_power_entity": "Instantaneous battery power (W).",
-          "battery_soc_entity": "Current charge percentage (0-100).",
-          "battery_charge_positive": "Enable if positive means charging.",
-          "battery_capacity_kwh": "Used for autonomy estimates.",
-          "battery_min_soc": "Below this SOC, battery takes absolute priority over EV.",
-          "battery_target_soc": "Above this SOC, surplus is routed to the EV.",
-          "battery_max_charge_w": "Maximum inverter charge power."
+          "battery_min_soc": "Below this level the battery always wins over EV charging.",
+          "battery_target_soc": "Above this level the surplus goes to the EV.",
+          "battery_max_charge_w": "Maximum power the inverter can push into the battery."
         }
       },
-      "ev": {
-        "title": "EV wallbox",
-        "description": "Configure measurement and control for your wallbox.",
+      "chargers": {
+        "title": "EV chargers",
+        "description": "Add, edit or remove wallboxes. Each charger has its own entities and priority.",
         "data": {
-          "ev_charger_power_entity": "Wallbox power draw",
-          "ev_charger_status_entity": "Wallbox status (optional)",
-          "ev_set_current_entity": "Number entity to set charging current (A)",
-          "ev_set_power_entity": "Number entity to set charging power (W) (optional)",
-          "ev_switch_entity": "Charging enable switch (optional)",
-          "ev_phases": "Phases",
-          "ev_voltage": "Nominal voltage",
-          "ev_min_current": "Minimum charging current",
-          "ev_max_current": "Maximum charging current"
+          "action": "Action"
+        }
+      },
+      "charger_form": {
+        "title": "Configure charger",
+        "description": "These settings apply to this charger only. The algorithm allocates current based on priority and the global distribution strategy.",
+        "data": {
+          "name": "Charger name",
+          "power_entity": "Draw power (W)",
+          "status_entity": "Status (optional)",
+          "set_current_entity": "Current (A) number entity",
+          "set_power_entity": "Power (W) number entity (optional)",
+          "switch_entity": "Enable switch (optional)",
+          "phases": "Phases",
+          "voltage": "Nominal voltage",
+          "min_current": "Minimum current",
+          "max_current": "Maximum current",
+          "priority": "Priority (1 = highest)"
         },
         "data_description": {
-          "ev_charger_power_entity": "Power delivered to the vehicle (W).",
-          "ev_charger_status_entity": "Status used to detect end-of-charge.",
-          "ev_set_current_entity": "number.* entity used to write the desired charging current.",
-          "ev_set_power_entity": "Alternative power (W) control if current is not available.",
-          "ev_switch_entity": "Switch to enable/disable charging (recommended).",
-          "ev_phases": "1 single-phase (P=V*I) or 3 three-phase (P=V*I*√3).",
-          "ev_voltage": "Reference voltage (usually 230 V).",
-          "ev_min_current": "Typically 6 A for EVs.",
-          "ev_max_current": "Maximum allowed by plug/cable/vehicle."
+          "name": "Shown in entity names, e.g. 'Garage' or 'Living room'.",
+          "phases": "1 = single phase (P=V·I), 3 = three phases (P=V·I·√3).",
+          "priority": "With the same mode, lower priority (smaller number) is served first."
         }
       },
       "thresholds": {
         "title": "Balancing parameters",
-        "description": "Tune the algorithm and default mode.",
         "data": {
           "default_priority": "Default mode",
-          "min_pv_surplus_w": "Minimum PV surplus to start charging",
-          "hysteresis_w": "Regulation hysteresis",
+          "charger_distribution": "Charger distribution",
+          "min_pv_surplus_w": "Minimum PV surplus",
+          "hysteresis_w": "Hysteresis",
           "overconsumption_threshold_w": "Over-consumption threshold",
-          "update_interval": "Recalculation interval"
+          "update_interval": "Recompute interval"
         },
         "data_description": {
-          "default_priority": "Mode selected on startup and after reset.",
-          "min_pv_surplus_w": "Minimum solar surplus needed to start EV charging.",
-          "hysteresis_w": "Dead-band preventing continuous adjustments.",
-          "overconsumption_threshold_w": "Total load above this triggers an alert.",
-          "update_interval": "How often the balancer recomputes (seconds)."
+          "charger_distribution": "How to split the total EV power between chargers."
         }
       },
       "notifications": {
         "title": "Notifications",
-        "description": "Channels and events to notify. Channels are the notify.* services available in Home Assistant (mobile_app, telegram, email, etc.).",
+        "description": "Choose notify.* channels and which events to notify.",
         "data": {
           "notify_targets": "Notification channels",
-          "notify_on_charge_complete": "Notify when charging completes",
+          "notify_on_charge_complete": "Notify on charge complete",
           "notify_on_overconsumption": "Notify on over-consumption",
           "notify_on_mode_change": "Notify on mode change"
-        },
-        "data_description": {
-          "notify_targets": "Type the notify service name, e.g. 'mobile_app_pixel' or 'telegram'. You can add multiple.",
-          "notify_on_charge_complete": "Alert when charging ends.",
-          "notify_on_overconsumption": "Alert when threshold is exceeded.",
-          "notify_on_mode_change": "Confirm every mode change."
         }
       }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {"title": "PV production"},
-      "house": {"title": "House & grid"},
-      "battery": {"title": "Battery"},
-      "ev": {"title": "EV wallbox"},
-      "thresholds": {"title": "Parameters"},
-      "notifications": {"title": "Notifications"}
     }
   },
   "selector": {
     "mode": {
       "options": {
-        "eco": "Eco — surplus only",
+        "eco": "Eco — solar surplus only",
         "balanced": "Balanced",
         "boost_car": "Boost car",
         "boost_battery": "Boost battery",
         "fast": "Fast charge",
         "off": "Off"
       }
+    },
+    "distribution": {
+      "options": {
+        "priority": "By priority (greedy)",
+        "equal": "Equal share",
+        "roundrobin": "Round robin"
+      }
     }
   },
   "entity": {
     "sensor": {
       "pv_power": {"name": "PV power"},
-      "house_power": {"name": "House load"},
+      "house_power": {"name": "Home consumption"},
       "grid_power": {"name": "Grid exchange"},
       "battery_power": {"name": "Battery power"},
       "battery_soc": {"name": "Battery SOC"},
-      "ev_power": {"name": "Wallbox power"},
+      "ev_power_total": {"name": "EV total power"},
       "surplus": {"name": "Available surplus"},
-      "recommended_ev_power": {"name": "Recommended EV power"},
-      "recommended_ev_current": {"name": "Recommended EV current"},
-      "battery_allocation": {"name": "Battery allocation"}
+      "recommended_ev_power_total": {"name": "Recommended EV total"},
+      "battery_allocation": {"name": "Battery allocation"},
+      "charger_power": {"name": "Power"},
+      "charger_recommended_power": {"name": "Recommended power"},
+      "charger_recommended_current": {"name": "Recommended current"}
     },
     "binary_sensor": {
       "overconsumption": {"name": "Over-consumption"},
-      "ev_charging": {"name": "Charging"},
-      "exporting": {"name": "Exporting"}
+      "exporting": {"name": "Exporting"},
+      "any_charging": {"name": "Charging"},
+      "charger_charging": {"name": "Charging"}
     },
     "number": {
       "battery_min_soc": {"name": "Battery min SOC"},
       "battery_target_soc": {"name": "Battery target SOC"},
       "battery_max_charge_w": {"name": "Battery max charge"},
-      "min_pv_surplus": {"name": "Min PV surplus"},
+      "min_pv_surplus": {"name": "Minimum PV surplus"},
       "hysteresis": {"name": "Hysteresis"},
       "overconsumption_w": {"name": "Over-consumption threshold"}
     },
     "switch": {
-      "boost_car": {"name": "Boost car"},
-      "boost_battery": {"name": "Boost battery"}
+      "boost_battery": {"name": "Boost battery"},
+      "charger_boost": {"name": "Boost"}
     },
     "select": {
       "mode": {
@@ -174,6 +193,14 @@
           "boost_battery": "Boost battery",
           "fast": "Fast",
           "off": "Off"
+        }
+      },
+      "distribution": {
+        "name": "Charger distribution",
+        "state": {
+          "priority": "By priority",
+          "equal": "Equal",
+          "roundrobin": "Round robin"
         }
       }
     }
@@ -187,8 +214,8 @@
         "entry_id": {"name": "Entry ID", "description": "Optional."}
       }
     },
-    "boost_car": {"name": "Boost car", "description": "Priority to EV charging."},
-    "boost_battery": {"name": "Boost battery", "description": "Priority to home battery."},
-    "reset": {"name": "Reset", "description": "Restore balanced mode."}
+    "boost_car": {"name": "Boost car", "description": "Prioritize EV charging."},
+    "boost_battery": {"name": "Boost battery", "description": "Prioritize home battery."},
+    "reset": {"name": "Reset", "description": "Back to balanced."}
   }
 }

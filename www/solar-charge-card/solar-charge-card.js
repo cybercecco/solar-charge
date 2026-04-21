@@ -1,16 +1,17 @@
 /*!
  * Solar Charge Card — Lovelace custom card
- * Tesla-like energy flow visualisation with animated connection lines.
+ * Tesla-like energy flow visualisation with animated connection lines,
+ * plus a compact tile row for multiple chargers.
  *
  * Registers: <solar-charge-card>
- * Also provides a basic editor: <solar-charge-card-editor>
+ * Also provides a visual editor: <solar-charge-card-editor>
  *
  * Drop this file into /config/www/solar-charge-card/ and add it as a resource:
  *   url: /local/solar-charge-card/solar-charge-card.js
  *   type: module
  */
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 
 console.info(
   `%c SOLAR-CHARGE-CARD %c v${CARD_VERSION} `,
@@ -18,7 +19,6 @@ console.info(
   "color:#1f6feb;background:#0d1117;padding:2px 6px;border-radius:0 3px 3px 0;"
 );
 
-// ----- Inline lit-html (pinned via CDN) -----
 import {
   LitElement,
   html,
@@ -35,6 +35,11 @@ const fmtW = (v) => {
   const n = Number(v);
   if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(2)} kW`;
   return `${n.toFixed(0)} W`;
+};
+
+const fmtA = (v) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return `${Number(v).toFixed(1)} A`;
 };
 
 const pct = (v) => (v === null || v === undefined || isNaN(v) ? "—" : `${Number(v).toFixed(0)}%`);
@@ -72,17 +77,17 @@ class SolarChargeCard extends LitElement {
       grid_entity: "sensor.solar_charge_grid_power",
       battery_entity: "sensor.solar_charge_battery_power",
       battery_soc_entity: "sensor.solar_charge_battery_soc",
-      ev_entity: "sensor.solar_charge_ev_power",
-      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power",
-      mode_entity: "select.solar_charge_mode",
-      boost_car_entity: "switch.solar_charge_boost_car",
+      ev_entity: "sensor.solar_charge_ev_power_total",
+      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power_total",
+      mode_entity: "select.solar_charge_balancing_mode",
       boost_battery_entity: "switch.solar_charge_boost_battery",
+      chargers: [],
       ...config,
     };
   }
 
   getCardSize() {
-    return 6;
+    return 7;
   }
 
   static getConfigElement() {
@@ -97,11 +102,11 @@ class SolarChargeCard extends LitElement {
       grid_entity: "sensor.solar_charge_grid_power",
       battery_entity: "sensor.solar_charge_battery_power",
       battery_soc_entity: "sensor.solar_charge_battery_soc",
-      ev_entity: "sensor.solar_charge_ev_power",
-      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power",
-      mode_entity: "select.solar_charge_mode",
-      boost_car_entity: "switch.solar_charge_boost_car",
+      ev_entity: "sensor.solar_charge_ev_power_total",
+      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power_total",
+      mode_entity: "select.solar_charge_balancing_mode",
       boost_battery_entity: "switch.solar_charge_boost_battery",
+      chargers: [],
     };
   }
 
@@ -112,17 +117,15 @@ class SolarChargeCard extends LitElement {
 
     const pv = stateNum(this.hass, c.pv_entity);
     const house = stateNum(this.hass, c.house_entity);
-    const grid = stateNum(this.hass, c.grid_entity); // >0 import, <0 export
-    const batt = stateNum(this.hass, c.battery_entity); // >0 charge, <0 discharge
+    const grid = stateNum(this.hass, c.grid_entity);
+    const batt = stateNum(this.hass, c.battery_entity);
     const soc = stateNum(this.hass, c.battery_soc_entity);
     const ev = stateNum(this.hass, c.ev_entity);
     const evRec = stateNum(this.hass, c.ev_recommended_entity);
     const mode = stateStr(this.hass, c.mode_entity);
-    const boostCar = stateStr(this.hass, c.boost_car_entity) === "on";
     const boostBattery = stateStr(this.hass, c.boost_battery_entity) === "on";
+    const chargers = Array.isArray(c.chargers) ? c.chargers : [];
 
-    // --- Flows (direction + magnitude) ---
-    // Positive magnitude means flow from source -> target shown on the SVG
     const flows = {
       pvHouse: Math.max(0, Math.min(pv, house)),
       pvBattery: batt > 0 ? Math.min(batt, pv) : 0,
@@ -146,23 +149,29 @@ class SolarChargeCard extends LitElement {
         </div>
 
         <div class="stage">
-          ${this._renderSvg(pv, house, grid, batt, ev, flows)}
+          ${this._renderSvg(flows)}
           ${this._renderBalloon("pv", "mdi:solar-power-variant", "FV", pv, "sun")}
           ${this._renderBalloon("grid", "mdi:transmission-tower", "Rete", grid, grid < 0 ? "export" : "grid")}
           ${this._renderBalloon("battery", "mdi:home-battery", "Batteria", batt, "battery", soc)}
           ${this._renderBalloon("house", "mdi:home-lightning-bolt", "Casa", house, "house")}
-          ${this._renderBalloon("ev", "mdi:car-electric", "Auto", ev, "ev", null, evRec)}
+          ${this._renderBalloon(
+            "ev",
+            "mdi:car-electric",
+            chargers.length > 1 ? `Auto (${chargers.length})` : "Auto",
+            ev,
+            "ev",
+            null,
+            evRec
+          )}
         </div>
 
+        ${chargers.length
+          ? html`<div class="chargers">
+              ${chargers.map((ch) => this._renderChargerTile(ch))}
+            </div>`
+          : nothing}
+
         <div class="controls">
-          <button
-            class=${`boost ${boostCar ? "active car" : ""}`}
-            @click=${() => this._toggleBoost(c.boost_car_entity)}
-            title="Priorità alla ricarica auto"
-          >
-            <ha-icon icon="mdi:car-electric"></ha-icon>
-            Boost auto
-          </button>
           <button
             class=${`boost ${boostBattery ? "active battery" : ""}`}
             @click=${() => this._toggleBoost(c.boost_battery_entity)}
@@ -173,10 +182,11 @@ class SolarChargeCard extends LitElement {
           </button>
           <button
             class="boost reset"
-            @click=${() => this._callService("select", "select_option", {
-              entity_id: c.mode_entity,
-              option: "balanced",
-            })}
+            @click=${() =>
+              this._callService("select", "select_option", {
+                entity_id: c.mode_entity,
+                option: "balanced",
+              })}
             title="Ripristina bilanciato"
           >
             <ha-icon icon="mdi:scale-balance"></ha-icon>
@@ -187,9 +197,48 @@ class SolarChargeCard extends LitElement {
     `;
   }
 
-  // ---------- SVG: connection lines + animated particles ----------
-  _renderSvg(pv, house, grid, batt, ev, flows) {
-    // Balloon centers (match CSS grid positions)
+  // ---------- Charger tile (multi-wallbox) ----------
+  _renderChargerTile(ch) {
+    const power = stateNum(this.hass, ch.power_entity);
+    const recPow = stateNum(this.hass, ch.recommended_power_entity);
+    const recA = stateNum(this.hass, ch.recommended_current_entity);
+    const boost = stateStr(this.hass, ch.boost_entity) === "on";
+    const charging = stateStr(this.hass, ch.charging_entity) === "on" || power > 200;
+
+    return html`
+      <div class=${`tile ${charging ? "charging" : ""}`}>
+        <div class="tile-head">
+          <ha-icon icon="mdi:ev-station"></ha-icon>
+          <span class="tile-name">${ch.name || "Colonnina"}</span>
+          ${boost
+            ? html`<span class="boost-pill"><ha-icon icon="mdi:rocket-launch"></ha-icon></span>`
+            : nothing}
+        </div>
+        <div class="tile-main">
+          <div class="tile-power">${fmtW(power)}</div>
+          <div class="tile-sub">
+            <span title="Potenza consigliata">→ ${fmtW(recPow)}</span>
+            ${ch.recommended_current_entity
+              ? html`<span title="Corrente consigliata"> · ${fmtA(recA)}</span>`
+              : nothing}
+          </div>
+        </div>
+        ${ch.boost_entity
+          ? html`<button
+              class=${`mini-btn ${boost ? "on" : ""}`}
+              @click=${() => this._toggleBoost(ch.boost_entity)}
+              title="Boost questa colonnina"
+            >
+              <ha-icon icon="mdi:rocket-launch-outline"></ha-icon>
+              Boost
+            </button>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  // ---------- SVG ----------
+  _renderSvg(flows) {
     const nodes = {
       pv: { x: 50, y: 15 },
       grid: { x: 15, y: 50 },
@@ -267,7 +316,6 @@ class SolarChargeCard extends LitElement {
     `;
   }
 
-  // ---------- Balloon (bubble) node ----------
   _renderBalloon(key, icon, label, value, kind, soc = null, hint = null) {
     const gridArea = {
       pv: "pv",
@@ -283,7 +331,7 @@ class SolarChargeCard extends LitElement {
         : nothing;
 
     const hintEl =
-      hint !== null
+      hint !== null && hint !== undefined
         ? html`<div class="hint" title="Potenza consigliata">→ ${fmtW(hint)}</div>`
         : nothing;
 
@@ -459,6 +507,80 @@ class SolarChargeCard extends LitElement {
       margin-top: 2px;
     }
 
+    /* --- multi-charger tiles --- */
+    .chargers {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .tile {
+      position: relative;
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: linear-gradient(145deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.15));
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      transition: border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .tile.charging {
+      border-color: rgba(239, 71, 111, 0.6);
+      box-shadow: 0 0 18px rgba(239, 71, 111, 0.25);
+    }
+    .tile-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.8rem;
+      color: var(--sc-fg-dim);
+    }
+    .tile-head ha-icon {
+      --mdc-icon-size: 16px;
+      color: var(--sc-ev);
+    }
+    .tile-name {
+      font-weight: 600;
+      color: var(--sc-fg);
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .boost-pill {
+      color: var(--sc-accent);
+      --mdc-icon-size: 14px;
+    }
+    .tile-main {
+      margin-top: 4px;
+    }
+    .tile-power {
+      font-size: 1.1rem;
+      font-weight: 700;
+    }
+    .tile-sub {
+      font-size: 0.75rem;
+      color: var(--sc-fg-dim);
+      margin-top: 2px;
+    }
+    .mini-btn {
+      margin-top: 8px;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 10px;
+      font-size: 0.75rem;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--sc-fg);
+      cursor: pointer;
+    }
+    .mini-btn ha-icon { --mdc-icon-size: 14px; }
+    .mini-btn.on {
+      background: linear-gradient(135deg, #ef476f, #ff6b9a);
+      border-color: transparent;
+      color: #fff;
+    }
+
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -482,10 +604,6 @@ class SolarChargeCard extends LitElement {
     .boost ha-icon { --mdc-icon-size: 18px; }
     .boost:hover { background: rgba(255, 255, 255, 0.08); }
     .boost.active { border-color: transparent; color: #fff; }
-    .boost.active.car {
-      background: linear-gradient(135deg, #ef476f, #ff6b9a);
-      box-shadow: 0 4px 16px rgba(239, 71, 111, 0.4);
-    }
     .boost.active.battery {
       background: linear-gradient(135deg, #28c76f, #6be6a3);
       box-shadow: 0 4px 16px rgba(40, 199, 111, 0.4);
@@ -495,7 +613,7 @@ class SolarChargeCard extends LitElement {
 }
 
 // ---------------------------------------------------------------------------
-// Editor (minimal visual editor)
+// Editor (visual editor)
 // ---------------------------------------------------------------------------
 class SolarChargeCardEditor extends LitElement {
   static properties = {
@@ -518,7 +636,6 @@ class SolarChargeCardEditor extends LitElement {
       { name: "ev_entity", selector: { entity: { domain: "sensor" } } },
       { name: "ev_recommended_entity", selector: { entity: { domain: "sensor" } } },
       { name: "mode_entity", selector: { entity: { domain: "select" } } },
-      { name: "boost_car_entity", selector: { entity: { domain: "switch" } } },
       { name: "boost_battery_entity", selector: { entity: { domain: "switch" } } },
     ];
   }
@@ -530,37 +647,63 @@ class SolarChargeCardEditor extends LitElement {
     grid_entity: "Scambio rete",
     battery_entity: "Potenza batteria",
     battery_soc_entity: "SOC batteria",
-    ev_entity: "Potenza colonnina",
-    ev_recommended_entity: "Potenza EV consigliata",
+    ev_entity: "Potenza EV totale",
+    ev_recommended_entity: "Potenza EV consigliata totale",
     mode_entity: "Modalità (select)",
-    boost_car_entity: "Boost auto (switch)",
     boost_battery_entity: "Boost batteria (switch)",
   };
 
   render() {
     if (!this.hass || !this._config) return html``;
+    const main = Object.fromEntries(
+      Object.entries(this._config).filter(([k]) => k !== "chargers")
+    );
     return html`
       <ha-form
         .hass=${this.hass}
-        .data=${this._config}
+        .data=${main}
         .schema=${this._schema()}
         .computeLabel=${(s) => this._labels[s.name] ?? s.name}
         @value-changed=${this._valueChanged}
       ></ha-form>
+      <div class="note">
+        La lista <code>chargers:</code> (una entry per wallbox) va scritta in YAML.
+        Esempio:<br />
+        <pre>
+chargers:
+  - name: Garage
+    power_entity: sensor.solar_charge_garage_power
+    recommended_power_entity: sensor.solar_charge_garage_recommended_power
+    recommended_current_entity: sensor.solar_charge_garage_recommended_current
+    charging_entity: binary_sensor.solar_charge_garage_charging
+    boost_entity: switch.solar_charge_garage_boost</pre>
+      </div>
     `;
   }
 
   _valueChanged(ev) {
-    this._config = ev.detail.value;
+    const newMain = ev.detail.value;
+    this._config = { ...this._config, ...newMain };
     this.dispatchEvent(
       new CustomEvent("config-changed", { detail: { config: this._config } })
     );
   }
+
+  static styles = css`
+    .note {
+      margin-top: 10px;
+      font-size: 0.8rem;
+      color: var(--secondary-text-color);
+    }
+    pre {
+      background: rgba(0, 0, 0, 0.2);
+      padding: 8px;
+      border-radius: 6px;
+      overflow-x: auto;
+    }
+  `;
 }
 
-// ---------------------------------------------------------------------------
-// Registration
-// ---------------------------------------------------------------------------
 customElements.define("solar-charge-card", SolarChargeCard);
 customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
 
@@ -569,7 +712,7 @@ window.customCards.push({
   type: "solar-charge-card",
   name: "Solar Charge Card",
   description:
-    "Tesla-like energy flow card for the Solar Charge Balancer integration.",
+    "Tesla-like energy flow card for the Solar Charge Balancer integration. Supports multiple wallboxes.",
   preview: true,
   documentationURL: "https://github.com/cybercecco/solar-charge",
 });

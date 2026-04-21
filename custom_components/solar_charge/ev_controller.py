@@ -1,8 +1,8 @@
-"""Applies the recommended EV charging power/current to the wallbox.
+"""Applies the recommended charging power/current to each configured wallbox.
 
-Listens to coordinator updates and writes on the configured number/switch
-entities. All actions are throttled by hysteresis to avoid flapping and
-respect min/max charger limits.
+Listens to the coordinator and for each charger writes the set_current (A) or
+set_power (W) entity, and toggles the optional enable switch. Per-charger
+hysteresis prevents chattering.
 """
 from __future__ import annotations
 
@@ -13,11 +13,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 
 from .const import (
-    CONF_EV_SET_CURRENT_ENTITY,
-    CONF_EV_SET_POWER_ENTITY,
-    CONF_EV_SWITCH_ENTITY,
+    CHARGER_ID,
+    CHARGER_SET_CURRENT_ENTITY,
+    CHARGER_SET_POWER_ENTITY,
+    CHARGER_SWITCH_ENTITY,
+    CONF_CHARGERS,
 )
-from .coordinator import FlowSnapshot, SolarChargeCoordinator
+from .coordinator import ChargerSnapshot, FlowSnapshot, SolarChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,9 +39,9 @@ class EvController:
         self.coordinator = coordinator
         self._cfg: dict[str, Any] = {**entry.data, **(entry.options or {})}
         self._unsub = None
-        self._last_current: float | None = None
-        self._last_power: float | None = None
-        self._last_switch: bool | None = None
+        self._last_current: dict[str, float] = {}
+        self._last_power: dict[str, float] = {}
+        self._last_switch: dict[str, bool] = {}
 
     @callback
     def async_start(self) -> None:
@@ -60,48 +62,58 @@ class EvController:
         self.hass.async_create_task(self._apply(snap))
 
     async def _apply(self, snap: FlowSnapshot) -> None:
-        switch_entity = self._cfg.get(CONF_EV_SWITCH_ENTITY)
-        current_entity = self._cfg.get(CONF_EV_SET_CURRENT_ENTITY)
-        power_entity = self._cfg.get(CONF_EV_SET_POWER_ENTITY)
+        cfg_by_id = {
+            c[CHARGER_ID]: c
+            for c in (self._cfg.get(CONF_CHARGERS, []) or [])
+            if CHARGER_ID in c
+        }
+        for ch in snap.chargers:
+            cfg = cfg_by_id.get(ch.id)
+            if not cfg:
+                continue
+            await self._apply_one(ch, cfg)
 
-        should_charge = snap.recommended_ev_power > 0
-        # Toggle switch with hysteresis
-        if switch_entity and self._last_switch != should_charge:
+    async def _apply_one(self, ch: ChargerSnapshot, cfg: dict[str, Any]) -> None:
+        switch_entity = cfg.get(CHARGER_SWITCH_ENTITY)
+        current_entity = cfg.get(CHARGER_SET_CURRENT_ENTITY)
+        power_entity = cfg.get(CHARGER_SET_POWER_ENTITY)
+
+        should_charge = ch.recommended_power > 0
+
+        # Enable/disable switch with hysteresis
+        if switch_entity and self._last_switch.get(ch.id) != should_charge:
             service = "turn_on" if should_charge else "turn_off"
             domain = switch_entity.split(".")[0]
             try:
                 await self.hass.services.async_call(
                     domain, service, {"entity_id": switch_entity}, blocking=False
                 )
-                self._last_switch = should_charge
+                self._last_switch[ch.id] = should_charge
             except Exception as err:  # noqa: BLE001
                 _LOGGER.warning("Failed to %s %s: %s", service, switch_entity, err)
 
         if not should_charge:
             return
 
-        # Prefer current control where available (more granular on most wallboxes)
         if current_entity:
-            amps = max(
-                self.coordinator.ev_min_current,
-                min(self.coordinator.ev_max_current, round(snap.recommended_ev_current)),
-            )
-            if self._last_current is None or abs(amps - self._last_current) >= _CURRENT_EPSILON:
+            amps = max(ch.min_current, min(ch.max_current, round(ch.recommended_current)))
+            prev = self._last_current.get(ch.id)
+            if prev is None or abs(amps - prev) >= _CURRENT_EPSILON:
                 await self._set_number(current_entity, amps)
-                self._last_current = amps
+                self._last_current[ch.id] = amps
 
         if power_entity:
-            watts = round(snap.recommended_ev_power)
-            if self._last_power is None or abs(watts - self._last_power) >= _POWER_EPSILON:
+            watts = round(ch.recommended_power)
+            prev = self._last_power.get(ch.id)
+            if prev is None or abs(watts - prev) >= _POWER_EPSILON:
                 await self._set_number(power_entity, watts)
-                self._last_power = watts
+                self._last_power[ch.id] = watts
 
     async def _set_number(self, entity_id: str, value: float) -> None:
         domain = entity_id.split(".")[0]
-        service = "set_value"
         try:
             await self.hass.services.async_call(
-                domain, service, {"entity_id": entity_id, "value": value}, blocking=False
+                domain, "set_value", {"entity_id": entity_id, "value": value}, blocking=False
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to set %s = %s: %s", entity_id, value, err)
