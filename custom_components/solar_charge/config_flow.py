@@ -51,7 +51,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
-from .presets import PRESET_BY_ID, PRESETS, PresetMatch, match_preset
+from .presets import PRESET_BY_ID, PRESETS, PresetMatch, auto_detect, match_preset
 from .const import (
     BATTERY_CAPACITY_KWH,
     BATTERY_CHARGE_POSITIVE,
@@ -397,6 +397,7 @@ class SolarChargeOptionsFlow(OptionsFlow):
         self._battery_edit_idx: int | None = None
         self._preset_match: PresetMatch | None = None
         self._preset_capacity_kwh: float = 0.0
+        self._preset_ranking: list[tuple[str, int]] | None = None
 
     # ------------------------------------------------------------------
     # Main menu
@@ -424,29 +425,57 @@ class SolarChargeOptionsFlow(OptionsFlow):
     # Preset wizard (auto-detect for common solar systems)
     # ------------------------------------------------------------------
     async def async_step_preset(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Ask the user to pick a known system; scan HA and show matches."""
-        if user_input is not None:
-            preset = PRESET_BY_ID.get(user_input["preset"])
-            if preset is None:
-                return await self.async_step_init()
-            self._preset_capacity_kwh = float(
-                user_input.get("battery_capacity_kwh")
-                or preset.default_battery_capacity_kwh
-                or 0.0
-            )
-            self._preset_match = match_preset(self.hass, preset)
-            return await self.async_step_preset_apply()
+        """Ask the user to pick a known system; scan HA and show matches.
 
-        options = [{"value": p.id, "label": p.label} for p in PRESETS]
+        The first dropdown option is *auto*: when selected we run every
+        preset against the current state machine and pick the best scoring
+        one. If nothing matches we fall back to showing an empty preview so
+        the user can pick a preset manually.
+        """
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            chosen = user_input["preset"]
+            capacity = float(user_input.get("battery_capacity_kwh") or 0.0)
+
+            if chosen == "auto":
+                result = auto_detect(self.hass)
+                if result is None:
+                    errors["base"] = "auto_detect_failed"
+                else:
+                    self._preset_match = result.match
+                    self._preset_capacity_kwh = (
+                        capacity
+                        or result.match.preset.default_battery_capacity_kwh
+                        or 0.0
+                    )
+                    self._preset_ranking = result.ranking
+                    return await self.async_step_preset_apply()
+            else:
+                preset = PRESET_BY_ID.get(chosen)
+                if preset is None:
+                    errors["base"] = "unknown_preset"
+                else:
+                    self._preset_capacity_kwh = (
+                        capacity or preset.default_battery_capacity_kwh or 0.0
+                    )
+                    self._preset_match = match_preset(self.hass, preset)
+                    self._preset_ranking = None
+                    return await self.async_step_preset_apply()
+
+        options: list[dict[str, str]] = [
+            {"value": "auto", "label": f"{chr(0x1F50D)}  Rileva automaticamente"},
+        ]
+        options += [{"value": p.id, "label": p.label} for p in PRESETS]
+
         schema = vol.Schema(
             {
-                vol.Required("preset", default="huawei"): selector.SelectSelector(
+                vol.Required("preset", default="auto"): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=options, mode=selector.SelectSelectorMode.DROPDOWN
                     )
                 ),
                 vol.Optional(
-                    "battery_capacity_kwh", default=10.0
+                    "battery_capacity_kwh", default=0.0
                 ): selector.NumberSelector(
                     selector.NumberSelectorConfig(
                         min=0, max=200, step=0.1, unit_of_measurement="kWh"
@@ -454,7 +483,9 @@ class SolarChargeOptionsFlow(OptionsFlow):
                 ),
             }
         )
-        return self.async_show_form(step_id="preset", data_schema=schema)
+        return self.async_show_form(
+            step_id="preset", data_schema=schema, errors=errors
+        )
 
     async def async_step_preset_apply(
         self, user_input: dict[str, Any] | None = None
@@ -468,6 +499,7 @@ class SolarChargeOptionsFlow(OptionsFlow):
             if user_input.get("apply"):
                 self._apply_preset(match, self._preset_capacity_kwh)
             self._preset_match = None
+            self._preset_ranking = None
             return await self.async_step_init()
 
         # Build a read-only summary string that HA shows as `description_placeholders`
@@ -478,6 +510,14 @@ class SolarChargeOptionsFlow(OptionsFlow):
                 return "\n        - " + "\n        - ".join(value)
             return str(value)
 
+        ranking_str = "—"
+        if self._preset_ranking:
+            labels = {p.id: p.label for p in PRESETS}
+            ranking_str = ", ".join(
+                f"{labels.get(pid, pid)} ({score})"
+                for pid, score in self._preset_ranking[:5]
+            )
+
         placeholders = {
             "preset_label": match.preset.label,
             "preset_notes": match.preset.notes or "—",
@@ -487,6 +527,7 @@ class SolarChargeOptionsFlow(OptionsFlow):
             "battery_power": _fmt(match.battery_power),
             "battery_soc": _fmt(match.battery_soc),
             "battery_capacity": f"{self._preset_capacity_kwh:.1f} kWh",
+            "ranking": ranking_str,
         }
 
         schema = vol.Schema(

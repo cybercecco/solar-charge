@@ -38,19 +38,19 @@
       },
       "preset": {
         "title": "Solar system preset",
-        "description": "Pick your inverter brand: Home Assistant will be scanned for the standard sensors exposed by the matching integration and they will be proposed as auto-configuration. You can always tweak every field manually afterwards.",
+        "description": "Leave **Auto-detect** to let the integration analyse existing entities and pick the best matching preset, or select your brand manually. Every field remains editable in the next steps.",
         "data": {
           "preset": "System",
-          "battery_capacity_kwh": "Total battery capacity (kWh)"
+          "battery_capacity_kwh": "Total battery capacity (kWh) — 0 = use default"
         },
         "data_description": {
-          "preset": "Huawei → huawei_solar (HACS). Other entries use the official same-named integrations.",
-          "battery_capacity_kwh": "Huawei LUNA 2000: 5 kWh per module (2 modules = 10 kWh). Ignore if not applicable."
+          "preset": "Auto-detect: each preset is scored against your entities and the highest-scoring one is applied. Huawei → huawei_solar (HACS). Other entries use the official same-named integrations.",
+          "battery_capacity_kwh": "Huawei LUNA 2000: 5 kWh per module (2 modules = 10 kWh). Leave at 0 to use the preset default."
         }
       },
       "preset_apply": {
-        "title": "Auto-detect result",
-        "description": "System: **{preset_label}**\n{preset_notes}\n\nDetected entities:\n- PV power: {pv}\n- Home consumption: {house}\n- Grid exchange: {grid}\n- Battery power: {battery_power}\n- Battery SOC: {battery_soc}\n- Battery capacity: {battery_capacity}\n\nConfirm to apply. Already-configured values are preserved for fields where the preset found nothing.",
+        "title": "Detection result",
+        "description": "Chosen system: **{preset_label}**\n{preset_notes}\n\nPreset ranking (score in parentheses): {ranking}\n\nDetected entities:\n- PV power: {pv}\n- Home consumption: {house}\n- Grid exchange: {grid}\n- Battery power: {battery_power}\n- Battery SOC: {battery_soc}\n- Battery capacity: {battery_capacity}\n\nConfirm to apply. Already-configured values are preserved for fields where the preset found nothing.",
         "data": {
           "apply": "Apply this configuration"
         }
@@ -167,6 +167,10 @@
           "notify_on_mode_change": "Notify on mode change"
         }
       }
+    },
+    "error": {
+      "auto_detect_failed": "No supported preset matched any entity in this instance. Please pick the brand manually from the dropdown.",
+      "unknown_preset": "Unknown preset."
     }
   },
   "selector": {

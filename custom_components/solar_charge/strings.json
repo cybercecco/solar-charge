@@ -38,19 +38,19 @@
       },
       "preset": {
         "title": "Preset impianto solare",
-        "description": "Seleziona la marca del tuo sistema: Home Assistant verrà analizzato alla ricerca dei sensori standard della relativa integrazione e verranno proposti come preconfigurazione. Puoi sempre ritoccare i campi a mano nei passaggi successivi.",
+        "description": "Lascia **Rileva automaticamente** se vuoi che l'integrazione analizzi le entità esistenti e scelga da sola il preset più adatto, oppure seleziona a mano la marca del tuo sistema. Puoi sempre ritoccare i campi nei passaggi successivi.",
         "data": {
           "preset": "Sistema",
-          "battery_capacity_kwh": "Capacità totale batteria (kWh)"
+          "battery_capacity_kwh": "Capacità totale batteria (kWh) — 0 = usa il default"
         },
         "data_description": {
-          "preset": "Huawei → integrazione huawei_solar (HACS). Le altre voci usano le integrazioni ufficiali omonime.",
-          "battery_capacity_kwh": "Per la LUNA 2000: 5 kWh per modulo (2 moduli = 10 kWh). Ignora se non applicabile."
+          "preset": "Rileva automaticamente: ogni preset viene testato contro le tue entità e viene scelto quello con più corrispondenze. Huawei → integrazione huawei_solar (HACS). Le altre voci usano le integrazioni ufficiali omonime.",
+          "battery_capacity_kwh": "Per la LUNA 2000: 5 kWh per modulo (2 moduli = 10 kWh). Lascia 0 per usare il default del preset."
         }
       },
       "preset_apply": {
-        "title": "Risultato dell'auto-rilevamento",
-        "description": "Sistema: **{preset_label}**\n{preset_notes}\n\nEntità rilevate:\n- PV power: {pv}\n- Consumi casa: {house}\n- Scambio con rete: {grid}\n- Potenza batteria: {battery_power}\n- SOC batteria: {battery_soc}\n- Capacità batteria: {battery_capacity}\n\nConferma per applicare la configurazione. I valori già impostati non verranno rimossi se il preset non trova nulla per quel campo.",
+        "title": "Risultato del rilevamento",
+        "description": "Sistema scelto: **{preset_label}**\n{preset_notes}\n\nRanking dei preset (score in parentesi): {ranking}\n\nEntità rilevate:\n- PV power: {pv}\n- Consumi casa: {house}\n- Scambio con rete: {grid}\n- Potenza batteria: {battery_power}\n- SOC batteria: {battery_soc}\n- Capacità batteria: {battery_capacity}\n\nConferma per applicare la configurazione. I valori già impostati non verranno rimossi se il preset non trova nulla per quel campo.",
         "data": {
           "apply": "Applica questa configurazione"
         }
@@ -181,6 +181,10 @@
           "notify_targets": "Nomi dei servizi notify, es. 'mobile_app_pixel' o 'telegram'."
         }
       }
+    },
+    "error": {
+      "auto_detect_failed": "Nessun preset supportato ha trovato entità corrispondenti in questa istanza. Scegli manualmente la marca dal menu a tendina.",
+      "unknown_preset": "Preset non riconosciuto."
     }
   },
   "selector": {

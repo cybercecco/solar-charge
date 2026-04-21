@@ -325,3 +325,62 @@ def match_preset(hass: "HomeAssistant", preset: Preset) -> PresetMatch:
         battery_power=_first_match(entity_ids, preset.battery_power_patterns),
         battery_soc=_first_match(entity_ids, preset.battery_soc_patterns),
     )
+
+
+# ---------------------------------------------------------------------------
+# Auto-detect: pick the best preset across all known systems
+# ---------------------------------------------------------------------------
+def _score_match(m: PresetMatch) -> int:
+    """Heuristic score of how well a preset fits the current HA.
+
+    Brand-specific fields (PV and battery) weigh more because their naming
+    conventions are the most distinctive. House/grid readings are common
+    to many integrations and are worth less per match.
+    """
+    score = 0
+    if m.pv_power:
+        score += 3 + min(len(m.pv_power) - 1, 3)  # multi-inverter bonus, capped
+    if m.battery_power:
+        score += 3
+    if m.battery_soc:
+        score += 3
+    if m.house_power:
+        score += 1
+    if m.grid_power:
+        score += 1
+    return score
+
+
+@dataclass
+class AutoDetectResult:
+    match: PresetMatch
+    score: int
+    ranking: list[tuple[str, int]]  # list of (preset_id, score) sorted desc
+
+
+def auto_detect(hass: "HomeAssistant") -> AutoDetectResult | None:
+    """Run every preset against HA and return the best scoring one.
+
+    Returns None if no preset matches anything (i.e. the user has no
+    supported inverter integration installed). The 'generic' preset is
+    always skipped because it matches nothing by definition.
+    """
+    ranked: list[tuple[PresetMatch, int]] = []
+    for preset in PRESETS:
+        if preset.id == "generic":
+            continue
+        m = match_preset(hass, preset)
+        score = _score_match(m)
+        if score > 0:
+            ranked.append((m, score))
+
+    if not ranked:
+        return None
+
+    ranked.sort(key=lambda p: p[1], reverse=True)
+    best_match, best_score = ranked[0]
+    return AutoDetectResult(
+        match=best_match,
+        score=best_score,
+        ranking=[(m.preset.id, s) for m, s in ranked],
+    )
