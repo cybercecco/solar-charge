@@ -54,22 +54,92 @@ _LOGGER = logging.getLogger(__name__)
 # querystring so browsers reload it after an integration update.
 FRONTEND_URL_BASE = "/solar_charge_static"
 FRONTEND_SCRIPT = "solar-charge-card.js"
-FRONTEND_CARD_VERSION = "0.4.1"
+FRONTEND_CARD_VERSION = "0.5.0"
+
+
+def _frontend_card_url() -> str:
+    return f"{FRONTEND_URL_BASE}/{FRONTEND_SCRIPT}?v={FRONTEND_CARD_VERSION}"
+
+
+async def _async_register_lovelace_resource(hass: HomeAssistant, url: str) -> bool:
+    """Register the card as a persistent Lovelace resource (storage mode).
+
+    This is what makes the card appear in the *Add card* picker: Lovelace
+    enumerates resources at dashboard load and calls the scripts; only
+    after one of them registers a custom element does the custom card
+    become selectable.
+
+    Returns True if we successfully registered or found an existing entry.
+    """
+    try:
+        lovelace_data = hass.data.get("lovelace")
+        if lovelace_data is None:
+            return False
+
+        resources = getattr(lovelace_data, "resources", None)
+        if resources is None and isinstance(lovelace_data, dict):
+            resources = lovelace_data.get("resources")
+        if resources is None:
+            _LOGGER.debug("Lovelace resources collection not available")
+            return False
+
+        # YAML mode: resources are read-only (mode attribute is 'yaml').
+        mode = getattr(lovelace_data, "mode", None)
+        if mode == "yaml":
+            _LOGGER.debug(
+                "Lovelace is in YAML mode; skipping resource registration. "
+                "Add `%s` to your resources: block manually or rely on extra_js_url.",
+                url,
+            )
+            return False
+
+        if hasattr(resources, "async_load") and not getattr(resources, "loaded", True):
+            await resources.async_load()
+
+        items_iter = (
+            resources.async_items()
+            if hasattr(resources, "async_items")
+            else list(getattr(resources, "data", {}).values())
+        )
+        base_url = url.split("?", 1)[0]
+        for item in items_iter:
+            existing = item.get("url", "")
+            if existing.split("?", 1)[0] == base_url:
+                if existing != url:
+                    # URL changed (version bump) → update so browsers refetch.
+                    try:
+                        await resources.async_update_item(
+                            item["id"], {"url": url, "res_type": "module"}
+                        )
+                        _LOGGER.info(
+                            "Solar Charge Lovelace resource URL updated to %s", url
+                        )
+                    except Exception as err:  # pragma: no cover
+                        _LOGGER.debug("Could not update Lovelace resource: %s", err)
+                return True
+
+        await resources.async_create_item({"url": url, "res_type": "module"})
+        _LOGGER.info("Solar Charge Lovelace resource registered: %s", url)
+        return True
+    except Exception as err:  # pragma: no cover - defensive
+        _LOGGER.warning("Could not register Lovelace resource automatically: %s", err)
+        return False
 
 
 async def _async_register_frontend(hass: HomeAssistant) -> None:
-    """Serve the bundled Lovelace card and register it as an extra JS module.
+    """Serve the bundled Lovelace card and register it in the dashboard.
 
-    This makes the custom card appear in the Lovelace "Add card" picker
-    without the user having to manually copy files under /config/www or add
-    a resource URL. Works both in storage and YAML dashboard mode.
+    Registration happens on three layers for maximum compatibility:
+      1. static path   -> the JS file is served under /solar_charge_static/.
+      2. extra JS URL  -> included in every frontend page (YAML-mode fallback).
+      3. Lovelace resource -> persistent entry shown in the *Add card* picker.
     """
     if hass.data.get(DOMAIN, {}).get("_frontend_registered"):
         return
 
     frontend_dir = str(Path(__file__).parent / "frontend")
 
-    # HA 2024.7+ prefers async_register_static_paths; older API is sync.
+    # 1) Static path (HA 2024.7+ prefers async_register_static_paths)
     try:
         from homeassistant.components.http import StaticPathConfig  # type: ignore
 
@@ -84,11 +154,19 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
             False,  # cache_headers
         )
 
-    add_extra_js_url(
-        hass, f"{FRONTEND_URL_BASE}/{FRONTEND_SCRIPT}?v={FRONTEND_CARD_VERSION}"
-    )
+    url = _frontend_card_url()
+
+    # 2) Extra JS URL (YAML mode + defensive belt-and-braces for storage mode)
+    add_extra_js_url(hass, url)
+
+    # 3) Persistent Lovelace resource (storage mode): this is what makes the
+    #    card appear in the picker on dashboards that use the UI editor.
+    await _async_register_lovelace_resource(hass, url)
+
     hass.data.setdefault(DOMAIN, {})["_frontend_registered"] = True
-    _LOGGER.info("Solar Charge Lovelace card registered at %s", FRONTEND_URL_BASE)
+    _LOGGER.info(
+        "Solar Charge Lovelace card served at %s (v%s)", url, FRONTEND_CARD_VERSION
+    )
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 

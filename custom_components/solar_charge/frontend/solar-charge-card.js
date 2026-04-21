@@ -11,7 +11,7 @@
  *   type: module
  */
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.5.0";
 
 console.info(
   `%c SOLAR-CHARGE-CARD %c v${CARD_VERSION} `,
@@ -704,15 +704,25 @@ chargers:
   `;
 }
 
-customElements.define("solar-charge-card", SolarChargeCard);
-customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
+// Defensive: the script may be loaded twice (once via add_extra_js_url,
+// once via a Lovelace resource entry). Without this guard
+// customElements.define would throw on the second run and nothing after
+// it (including the customCards registration) would execute.
+if (!customElements.get("solar-charge-card")) {
+  customElements.define("solar-charge-card", SolarChargeCard);
+}
+if (!customElements.get("solar-charge-card-editor")) {
+  customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
+}
 
 window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "solar-charge-card",
-  name: "Solar Charge Card",
-  description:
-    "Tesla-like energy flow card for the Solar Charge Balancer integration. Supports multiple wallboxes.",
-  preview: true,
-  documentationURL: "https://github.com/cybercecco/solar-charge",
-});
+if (!window.customCards.some((c) => c.type === "solar-charge-card")) {
+  window.customCards.push({
+    type: "solar-charge-card",
+    name: "Solar Charge Card",
+    description:
+      "Tesla-like energy flow card for the Solar Charge Balancer integration. Supports multiple wallboxes.",
+    preview: true,
+    documentationURL: "https://github.com/cybercecco/solar-charge",
+  });
+}
