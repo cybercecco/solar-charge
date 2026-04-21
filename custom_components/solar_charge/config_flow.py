@@ -3,11 +3,11 @@
 Design goals:
 - Installation must be LINEAR: the user just confirms a name and gets the
   integration created immediately (no mandatory data required yet).
-- All real configuration (PV, battery, chargers, thresholds, notifications)
+- All real configuration (PV, batteries, chargers, thresholds, notifications)
   lives in the OPTIONS flow and is accessed through a menu. Each section is
   a separate step so the user can modify just what they need.
-- Chargers are a LIST (multiple wallboxes): the options flow exposes a
-  dedicated sub-menu with add/edit/remove operations.
+- Chargers and batteries are LISTS: each has its own sub-menu with
+  add / edit / remove operations.
 - Multiple PV sources are supported through a multi-entity selector.
 
 The resulting config entry follows this shape:
@@ -18,9 +18,13 @@ The resulting config entry follows this shape:
         "house_power_entity": "...",
         "grid_power_entity": "...",
         "grid_export_negative": true,
-        "battery_power_entity": "...",
-        "battery_soc_entity": "...",
-        ...,
+        "batteries": [
+            {"id": "<uuid>", "name": "Powerwall", "power_entity": "...",
+             "soc_entity": "...", "capacity_kwh": 13.5, ...},
+            {"id": "<uuid>", "name": "LuxPower",  ...},
+        ],
+        "battery_min_soc": 20, "battery_target_soc": 80,
+        "battery_max_charge_w": 5000,
         "chargers": [
             {"id": "<uuid>", "name": "Wallbox salotto", ...},
             {"id": "<uuid>", "name": "Wallbox garage",  ...},
@@ -48,6 +52,12 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
+    BATTERY_CAPACITY_KWH,
+    BATTERY_CHARGE_POSITIVE,
+    BATTERY_ID,
+    BATTERY_NAME,
+    BATTERY_POWER_ENTITY,
+    BATTERY_SOC_ENTITY,
     CHARGER_ID,
     CHARGER_MAX_CURRENT,
     CHARGER_MIN_CURRENT,
@@ -61,12 +71,9 @@ from .const import (
     CHARGER_SWITCH_ENTITY,
     CHARGER_VOLTAGE,
     CONFIG_VERSION,
-    CONF_BATTERY_CAPACITY_KWH,
-    CONF_BATTERY_CHARGE_POSITIVE,
+    CONF_BATTERIES,
     CONF_BATTERY_MAX_CHARGE_W,
     CONF_BATTERY_MIN_SOC,
-    CONF_BATTERY_POWER_ENTITY,
-    CONF_BATTERY_SOC_ENTITY,
     CONF_BATTERY_TARGET_SOC,
     CONF_CHARGER_DISTRIBUTION,
     CONF_CHARGERS,
@@ -184,25 +191,35 @@ def _schema_house(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-def _schema_battery(defaults: dict[str, Any]) -> vol.Schema:
-    d = defaults
+def _schema_battery_unit(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    """Schema for a single battery unit."""
+    d = defaults or {}
     return vol.Schema(
         {
+            vol.Required(BATTERY_NAME, default=d.get(BATTERY_NAME, "Batteria")): selector.TextSelector(),
             vol.Optional(
-                CONF_BATTERY_POWER_ENTITY, default=d.get(CONF_BATTERY_POWER_ENTITY) or vol.UNDEFINED
+                BATTERY_POWER_ENTITY, default=d.get(BATTERY_POWER_ENTITY) or vol.UNDEFINED
             ): _power_entity_selector(),
             vol.Optional(
-                CONF_BATTERY_SOC_ENTITY, default=d.get(CONF_BATTERY_SOC_ENTITY) or vol.UNDEFINED
+                BATTERY_SOC_ENTITY, default=d.get(BATTERY_SOC_ENTITY) or vol.UNDEFINED
             ): _soc_entity_selector(),
             vol.Required(
-                CONF_BATTERY_CHARGE_POSITIVE,
-                default=d.get(CONF_BATTERY_CHARGE_POSITIVE, True),
+                BATTERY_CHARGE_POSITIVE, default=d.get(BATTERY_CHARGE_POSITIVE, True)
             ): selector.BooleanSelector(),
             vol.Optional(
-                CONF_BATTERY_CAPACITY_KWH, default=d.get(CONF_BATTERY_CAPACITY_KWH, 10.0)
+                BATTERY_CAPACITY_KWH, default=d.get(BATTERY_CAPACITY_KWH, 10.0)
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0, max=200, step=0.1, unit_of_measurement="kWh")
             ),
+        }
+    )
+
+
+def _schema_battery_thresholds(defaults: dict[str, Any]) -> vol.Schema:
+    """Schema for the global battery thresholds."""
+    d = defaults
+    return vol.Schema(
+        {
             vol.Required(
                 CONF_BATTERY_MIN_SOC, default=d.get(CONF_BATTERY_MIN_SOC, DEFAULT_BATTERY_MIN_SOC)
             ): selector.NumberSelector(
@@ -218,7 +235,7 @@ def _schema_battery(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_BATTERY_MAX_CHARGE_W,
                 default=d.get(CONF_BATTERY_MAX_CHARGE_W, DEFAULT_BATTERY_MAX_CHARGE_W),
             ): selector.NumberSelector(
-                selector.NumberSelectorConfig(min=500, max=20000, step=100, unit_of_measurement="W")
+                selector.NumberSelectorConfig(min=500, max=40000, step=100, unit_of_measurement="W")
             ),
         }
     )
@@ -373,8 +390,10 @@ class SolarChargeOptionsFlow(OptionsFlow):
         self._entry = entry
         self._data: dict[str, Any] = {**entry.data, **(entry.options or {})}
         self._data.setdefault(CONF_CHARGERS, [])
-        # Staging state for the charger sub-flow
+        self._data.setdefault(CONF_BATTERIES, [])
+        # Staging state for the sub-flows
         self._charger_edit_idx: int | None = None
+        self._battery_edit_idx: int | None = None
 
     # ------------------------------------------------------------------
     # Main menu
@@ -412,11 +431,80 @@ class SolarChargeOptionsFlow(OptionsFlow):
             return await self.async_step_init()
         return self.async_show_form(step_id="house", data_schema=_schema_house(self._data))
 
+    # --- Batteries sub-flow -------------------------------------------------
     async def async_step_battery(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Sub-menu for batteries: add / edit / remove / thresholds / back."""
+        batteries = self._data.get(CONF_BATTERIES, []) or []
+
+        if user_input is not None:
+            action = user_input["action"]
+            if action == "add":
+                self._battery_edit_idx = None
+                return await self.async_step_battery_form()
+            if action == "thresholds":
+                return await self.async_step_battery_thresholds()
+            if action == "back":
+                return await self.async_step_init()
+            if action.startswith("edit_"):
+                self._battery_edit_idx = int(action.split("_", 1)[1])
+                return await self.async_step_battery_form()
+            if action.startswith("remove_"):
+                idx = int(action.split("_", 1)[1])
+                if 0 <= idx < len(batteries):
+                    batteries = list(batteries)
+                    batteries.pop(idx)
+                    self._data[CONF_BATTERIES] = batteries
+                return await self.async_step_battery()
+
+        options: list[dict[str, str]] = [
+            {"value": "add", "label": "+  Aggiungi batteria"},
+            {"value": "thresholds", "label": "\u2699  Soglie globali (SOC min/target, max carica)"},
+        ]
+        for i, b in enumerate(batteries):
+            name = b.get(BATTERY_NAME) or f"Batteria {i + 1}"
+            options.append({"value": f"edit_{i}", "label": f"{chr(0x270F)}  Modifica: {name}"})
+            options.append({"value": f"remove_{i}", "label": f"{chr(0x2716)}  Elimina: {name}"})
+        options.append({"value": "back", "label": f"{chr(0x2190)}  Indietro"})
+
+        schema = vol.Schema(
+            {
+                vol.Required("action"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options, mode=selector.SelectSelectorMode.LIST
+                    )
+                )
+            }
+        )
+        return self.async_show_form(step_id="battery", data_schema=schema)
+
+    async def async_step_battery_form(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        batteries = list(self._data.get(CONF_BATTERIES, []) or [])
+        defaults: dict[str, Any] = {}
+        if self._battery_edit_idx is not None and 0 <= self._battery_edit_idx < len(batteries):
+            defaults = dict(batteries[self._battery_edit_idx])
+
+        if user_input is not None:
+            if self._battery_edit_idx is None:
+                user_input[BATTERY_ID] = uuid.uuid4().hex
+                batteries.append(user_input)
+            else:
+                user_input[BATTERY_ID] = defaults.get(BATTERY_ID) or uuid.uuid4().hex
+                batteries[self._battery_edit_idx] = user_input
+            self._data[CONF_BATTERIES] = batteries
+            self._battery_edit_idx = None
+            return await self.async_step_battery()
+
+        return self.async_show_form(
+            step_id="battery_form", data_schema=_schema_battery_unit(defaults)
+        )
+
+    async def async_step_battery_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             self._data.update(user_input)
-            return await self.async_step_init()
-        return self.async_show_form(step_id="battery", data_schema=_schema_battery(self._data))
+            return await self.async_step_battery()
+        return self.async_show_form(
+            step_id="battery_thresholds", data_schema=_schema_battery_thresholds(self._data)
+        )
 
     async def async_step_thresholds(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:

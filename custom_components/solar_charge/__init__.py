@@ -10,6 +10,12 @@ from homeassistant.helpers import config_validation as cv
 import voluptuous as vol
 
 from .const import (
+    BATTERY_CAPACITY_KWH,
+    BATTERY_CHARGE_POSITIVE,
+    BATTERY_ID,
+    BATTERY_NAME,
+    BATTERY_POWER_ENTITY,
+    BATTERY_SOC_ENTITY,
     CHARGER_ID,
     CHARGER_MAX_CURRENT,
     CHARGER_MIN_CURRENT,
@@ -23,6 +29,7 @@ from .const import (
     CHARGER_SWITCH_ENTITY,
     CHARGER_VOLTAGE,
     CONFIG_VERSION,
+    CONF_BATTERIES,
     CONF_CHARGERS,
     DOMAIN,
     MODES,
@@ -115,7 +122,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     new_data = dict(entry.data)
     new_options = dict(entry.options or {})
 
-    # Old keys from v1
+    # ------------------------------------------------------------------
+    # v1 -> v2: single wallbox keys -> chargers list
+    # ------------------------------------------------------------------
     OLD_EV_CHARGER_POWER_ENTITY = "ev_charger_power_entity"
     OLD_EV_CHARGER_STATUS_ENTITY = "ev_charger_status_entity"
     OLD_EV_SET_CURRENT_ENTITY = "ev_set_current_entity"
@@ -126,7 +135,7 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     OLD_EV_MIN_CURRENT = "ev_min_current"
     OLD_EV_MAX_CURRENT = "ev_max_current"
 
-    def _extract(src: dict) -> dict | None:
+    def _extract_charger(src: dict) -> dict | None:
         if not any(k in src for k in (OLD_EV_CHARGER_POWER_ENTITY, OLD_EV_SET_CURRENT_ENTITY)):
             return None
         return {
@@ -144,17 +153,45 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CHARGER_PRIORITY: 10,
         }
 
-    charger_from_data = _extract(new_data)
-    charger_from_opts = _extract(new_options)
+    charger_from_data = _extract_charger(new_data)
+    charger_from_opts = _extract_charger(new_options)
 
-    existing = list(new_data.get(CONF_CHARGERS, []) or [])
+    existing_chargers = list(new_data.get(CONF_CHARGERS, []) or [])
     if charger_from_opts:
-        # prefer options since they were the last user-edited config
-        existing.append(charger_from_opts)
+        existing_chargers.append(charger_from_opts)
     elif charger_from_data:
-        existing.append(charger_from_data)
+        existing_chargers.append(charger_from_data)
+    new_data[CONF_CHARGERS] = existing_chargers
 
-    new_data[CONF_CHARGERS] = existing
+    # ------------------------------------------------------------------
+    # v2 -> v3: single battery keys -> batteries list
+    # ------------------------------------------------------------------
+    OLD_BATTERY_POWER_ENTITY = "battery_power_entity"
+    OLD_BATTERY_SOC_ENTITY = "battery_soc_entity"
+    OLD_BATTERY_CHARGE_POSITIVE = "battery_charge_positive"
+    OLD_BATTERY_CAPACITY_KWH = "battery_capacity_kwh"
+
+    def _extract_battery(src: dict) -> dict | None:
+        if not any(k in src for k in (OLD_BATTERY_POWER_ENTITY, OLD_BATTERY_SOC_ENTITY)):
+            return None
+        return {
+            BATTERY_ID: uuid.uuid4().hex,
+            BATTERY_NAME: "Batteria",
+            BATTERY_POWER_ENTITY: src.pop(OLD_BATTERY_POWER_ENTITY, None),
+            BATTERY_SOC_ENTITY: src.pop(OLD_BATTERY_SOC_ENTITY, None),
+            BATTERY_CHARGE_POSITIVE: bool(src.pop(OLD_BATTERY_CHARGE_POSITIVE, True)),
+            BATTERY_CAPACITY_KWH: float(src.pop(OLD_BATTERY_CAPACITY_KWH, 10.0) or 10.0),
+        }
+
+    battery_from_data = _extract_battery(new_data)
+    battery_from_opts = _extract_battery(new_options)
+
+    existing_batteries = list(new_data.get(CONF_BATTERIES, []) or [])
+    if battery_from_opts:
+        existing_batteries.append(battery_from_opts)
+    elif battery_from_data:
+        existing_batteries.append(battery_from_data)
+    new_data[CONF_BATTERIES] = existing_batteries
 
     hass.config_entries.async_update_entry(
         entry, data=new_data, options=new_options, version=CONFIG_VERSION

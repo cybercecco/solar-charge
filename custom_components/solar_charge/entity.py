@@ -34,6 +34,16 @@ def charger_device_info(entry: ConfigEntry, charger_id: str, charger_name: str) 
     )
 
 
+def battery_device_info(entry: ConfigEntry, battery_id: str, battery_name: str) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, f"{entry.entry_id}_battery_{battery_id}")},
+        manufacturer="Solar Charge",
+        name=f"{entry.title or 'Solar Charge'} — {battery_name}",
+        model="Home Battery",
+        via_device=(DOMAIN, entry.entry_id),
+    )
+
+
 class SolarChargeEntity(CoordinatorEntity[SolarChargeCoordinator]):
     """Base for entities attached to the main hub device."""
 
@@ -67,3 +77,25 @@ class ChargerEntity(CoordinatorEntity[SolarChargeCoordinator]):
         self._key = key
         self._attr_unique_id = f"{entry.entry_id}_charger_{charger_id}_{key}"
         self._attr_device_info = charger_device_info(entry, charger_id, charger_name)
+
+
+class BatteryEntity(CoordinatorEntity[SolarChargeCoordinator]):
+    """Base for entities attached to a per-battery sub-device."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: SolarChargeCoordinator,
+        entry: ConfigEntry,
+        battery_id: str,
+        battery_name: str,
+        key: str,
+    ) -> None:
+        super().__init__(coordinator)
+        self._entry = entry
+        self._battery_id = battery_id
+        self._battery_name = battery_name
+        self._key = key
+        self._attr_unique_id = f"{entry.entry_id}_battery_{battery_id}_{key}"
+        self._attr_device_info = battery_device_info(entry, battery_id, battery_name)

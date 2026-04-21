@@ -19,9 +19,22 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import CHARGER_ID, CHARGER_NAME, CONF_CHARGERS, DOMAIN
-from .coordinator import ChargerSnapshot, FlowSnapshot, SolarChargeCoordinator
-from .entity import ChargerEntity, SolarChargeEntity
+from .const import (
+    BATTERY_ID,
+    BATTERY_NAME,
+    CHARGER_ID,
+    CHARGER_NAME,
+    CONF_BATTERIES,
+    CONF_CHARGERS,
+    DOMAIN,
+)
+from .coordinator import (
+    BatterySnapshot,
+    ChargerSnapshot,
+    FlowSnapshot,
+    SolarChargeCoordinator,
+)
+from .entity import BatteryEntity, ChargerEntity, SolarChargeEntity
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +157,34 @@ CHARGER_SENSORS: tuple[ChargerSensor, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------
+# Per-battery sensors
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True, kw_only=True)
+class BatterySensor(SensorEntityDescription):
+    value_fn: Callable[[BatterySnapshot], Any]
+
+
+BATTERY_SENSORS: tuple[BatterySensor, ...] = (
+    BatterySensor(
+        key="power",
+        translation_key="battery_unit_power",
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfPower.WATT,
+        value_fn=lambda b: b.power,
+    ),
+    BatterySensor(
+        key="soc",
+        translation_key="battery_unit_soc",
+        device_class=SensorDeviceClass.BATTERY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=PERCENTAGE,
+        value_fn=lambda b: b.soc,
+    ),
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
@@ -157,6 +198,13 @@ async def async_setup_entry(
         cname = cfg.get(CHARGER_NAME, cid)
         for desc in CHARGER_SENSORS:
             entities.append(ChargerSensorEntity(coord, entry, cid, cname, desc))
+    for cfg in merged.get(CONF_BATTERIES, []) or []:
+        if BATTERY_ID not in cfg:
+            continue
+        bid = cfg[BATTERY_ID]
+        bname = cfg.get(BATTERY_NAME, bid)
+        for desc in BATTERY_SENSORS:
+            entities.append(BatterySensorEntity(coord, entry, bid, bname, desc))
     async_add_entities(entities)
 
 
@@ -223,3 +271,41 @@ class ChargerSensorEntity(ChargerEntity, SensorEntity):
         if ch is None:
             return None
         return {"priority": ch.priority, "boost": ch.boost}
+
+
+class BatterySensorEntity(BatteryEntity, SensorEntity):
+    entity_description: BatterySensor
+
+    def __init__(
+        self,
+        coordinator: SolarChargeCoordinator,
+        entry: ConfigEntry,
+        battery_id: str,
+        battery_name: str,
+        description: BatterySensor,
+    ) -> None:
+        super().__init__(coordinator, entry, battery_id, battery_name, description.key)
+        self.entity_description = description
+
+    def _find(self) -> BatterySnapshot | None:
+        snap = self.coordinator.data
+        if snap is None:
+            return None
+        for b in snap.batteries:
+            if b.id == self._battery_id:
+                return b
+        return None
+
+    @property
+    def native_value(self) -> Any:
+        b = self._find()
+        if b is None:
+            return None
+        return self.entity_description.value_fn(b)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        b = self._find()
+        if b is None:
+            return None
+        return {"capacity_kwh": b.capacity_kwh}

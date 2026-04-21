@@ -16,6 +16,12 @@ from homeassistant.core import HomeAssistant, State
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import (
+    BATTERY_CAPACITY_KWH,
+    BATTERY_CHARGE_POSITIVE,
+    BATTERY_ID,
+    BATTERY_NAME,
+    BATTERY_POWER_ENTITY,
+    BATTERY_SOC_ENTITY,
     CHARGER_ID,
     CHARGER_MAX_CURRENT,
     CHARGER_MIN_CURRENT,
@@ -24,11 +30,9 @@ from .const import (
     CHARGER_POWER_ENTITY,
     CHARGER_PRIORITY,
     CHARGER_VOLTAGE,
-    CONF_BATTERY_CHARGE_POSITIVE,
+    CONF_BATTERIES,
     CONF_BATTERY_MAX_CHARGE_W,
     CONF_BATTERY_MIN_SOC,
-    CONF_BATTERY_POWER_ENTITY,
-    CONF_BATTERY_SOC_ENTITY,
     CONF_BATTERY_TARGET_SOC,
     CONF_CHARGER_DISTRIBUTION,
     CONF_CHARGERS,
@@ -66,6 +70,18 @@ _LOGGER = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Per-battery snapshot
+# ---------------------------------------------------------------------------
+@dataclass
+class BatterySnapshot:
+    id: str
+    name: str
+    capacity_kwh: float = 0.0
+    power: float = 0.0          # W, >0 = charging
+    soc: float | None = None    # %
+
+
+# ---------------------------------------------------------------------------
 # Per-charger snapshot
 # ---------------------------------------------------------------------------
 @dataclass
@@ -99,6 +115,7 @@ class FlowSnapshot:
     mode: str = MODE_BALANCED
     overconsumption: bool = False
     chargers: list[ChargerSnapshot] = field(default_factory=list)
+    batteries: list[BatterySnapshot] = field(default_factory=list)
 
 
 def _as_float(state: State | None) -> float | None:
@@ -151,6 +168,10 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
     @property
     def chargers_cfg(self) -> list[dict[str, Any]]:
         return list(self._data.get(CONF_CHARGERS, []) or [])
+
+    @property
+    def batteries_cfg(self) -> list[dict[str, Any]]:
+        return list(self._data.get(CONF_BATTERIES, []) or [])
 
     def set_mode(self, mode: str) -> None:
         self.mode = mode
@@ -208,11 +229,40 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
             export_negative = bool(self._data.get(CONF_GRID_IS_EXPORT_NEGATIVE, True))
             snap.grid_power = grid_val if export_negative else -grid_val
 
-        batt_val = _as_float(hass.states.get(self._data.get(CONF_BATTERY_POWER_ENTITY, "") or ""))
-        if batt_val is not None:
-            charge_positive = bool(self._data.get(CONF_BATTERY_CHARGE_POSITIVE, True))
-            snap.battery_power = batt_val if charge_positive else -batt_val
-        snap.battery_soc = _as_float(hass.states.get(self._data.get(CONF_BATTERY_SOC_ENTITY, "") or ""))
+        # Home batteries (aggregate across N units)
+        total_batt_power = 0.0
+        weighted_soc_sum = 0.0
+        weighted_soc_cap = 0.0
+        soc_values: list[float] = []
+        for bcfg in self.batteries_cfg:
+            bid = bcfg.get(BATTERY_ID) or ""
+            bname = bcfg.get(BATTERY_NAME) or bid or "battery"
+            cap = float(bcfg.get(BATTERY_CAPACITY_KWH) or 0.0)
+            b = BatterySnapshot(id=bid, name=bname, capacity_kwh=cap)
+
+            pw = _as_float(hass.states.get(bcfg.get(BATTERY_POWER_ENTITY, "") or ""))
+            if pw is not None:
+                charge_positive = bool(bcfg.get(BATTERY_CHARGE_POSITIVE, True))
+                b.power = pw if charge_positive else -pw
+                total_batt_power += b.power
+
+            soc_v = _as_float(hass.states.get(bcfg.get(BATTERY_SOC_ENTITY, "") or ""))
+            if soc_v is not None:
+                b.soc = soc_v
+                soc_values.append(soc_v)
+                if cap > 0:
+                    weighted_soc_sum += soc_v * cap
+                    weighted_soc_cap += cap
+
+            snap.batteries.append(b)
+
+        snap.battery_power = total_batt_power
+        if weighted_soc_cap > 0:
+            snap.battery_soc = weighted_soc_sum / weighted_soc_cap
+        elif soc_values:
+            snap.battery_soc = sum(soc_values) / len(soc_values)
+        else:
+            snap.battery_soc = None
 
         # EVs
         for cfg in self.chargers_cfg:

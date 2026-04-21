@@ -9,7 +9,7 @@ PLATFORMS: Final = ["sensor", "number", "switch", "select", "binary_sensor"]
 # ---------------------------------------------------------------------------
 # Configuration schema version (bump together with async_migrate_entry)
 # ---------------------------------------------------------------------------
-CONFIG_VERSION: Final = 2
+CONFIG_VERSION: Final = 3
 
 # ---------------------------------------------------------------------------
 # Top-level keys
@@ -26,14 +26,29 @@ CONF_HOUSE_POWER_ENTITY: Final = "house_power_entity"
 CONF_GRID_POWER_ENTITY: Final = "grid_power_entity"
 CONF_GRID_IS_EXPORT_NEGATIVE: Final = "grid_export_negative"
 
-# Home battery
-CONF_BATTERY_POWER_ENTITY: Final = "battery_power_entity"
-CONF_BATTERY_SOC_ENTITY: Final = "battery_soc_entity"
-CONF_BATTERY_CHARGE_POSITIVE: Final = "battery_charge_positive"
-CONF_BATTERY_CAPACITY_KWH: Final = "battery_capacity_kwh"
+# ---------------------------------------------------------------------------
+# Home batteries — list of dicts under CONF_BATTERIES.
+# Global thresholds (min/target SOC, max charge power) stay at entry level
+# because they act on the aggregated system.
+# ---------------------------------------------------------------------------
+CONF_BATTERIES: Final = "batteries"
+BATTERY_ID: Final = "id"                        # stable uuid4
+BATTERY_NAME: Final = "name"
+BATTERY_POWER_ENTITY: Final = "power_entity"
+BATTERY_SOC_ENTITY: Final = "soc_entity"
+BATTERY_CHARGE_POSITIVE: Final = "charge_positive"
+BATTERY_CAPACITY_KWH: Final = "capacity_kwh"
+
+# Global battery strategy knobs
 CONF_BATTERY_MIN_SOC: Final = "battery_min_soc"
 CONF_BATTERY_TARGET_SOC: Final = "battery_target_soc"
 CONF_BATTERY_MAX_CHARGE_W: Final = "battery_max_charge_w"
+
+# Legacy v1/v2 single-battery keys (kept for migration only)
+CONF_BATTERY_POWER_ENTITY_LEGACY: Final = "battery_power_entity"
+CONF_BATTERY_SOC_ENTITY_LEGACY: Final = "battery_soc_entity"
+CONF_BATTERY_CHARGE_POSITIVE_LEGACY: Final = "battery_charge_positive"
+CONF_BATTERY_CAPACITY_KWH_LEGACY: Final = "battery_capacity_kwh"
 
 # ---------------------------------------------------------------------------
 # EV chargers — list of dicts under CONF_CHARGERS

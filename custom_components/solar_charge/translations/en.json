@@ -28,7 +28,7 @@
         "menu_options": {
           "pv": "Solar production",
           "house": "Home & grid consumption",
-          "battery": "Home battery",
+          "battery": "Home batteries",
           "chargers": "EV chargers",
           "thresholds": "Balancing parameters",
           "notifications": "Notifications",
@@ -59,21 +59,39 @@
         }
       },
       "battery": {
-        "title": "Home battery",
-        "description": "If you don't have a battery storage you can leave these fields empty.",
+        "title": "Home batteries",
+        "description": "Add, edit or remove battery packs. Power and SOC are aggregated automatically (capacity-weighted average for SOC).",
         "data": {
-          "battery_power_entity": "Battery charge/discharge power",
-          "battery_soc_entity": "State of charge (SOC)",
-          "battery_charge_positive": "Positive values = charging",
-          "battery_capacity_kwh": "Nominal capacity",
-          "battery_min_soc": "Protected minimum SOC",
-          "battery_target_soc": "Target SOC",
-          "battery_max_charge_w": "Max charge power"
+          "action": "Action"
+        }
+      },
+      "battery_form": {
+        "title": "Configure battery",
+        "description": "Each unit has its own entities. Capacity (kWh) is used to weight the average SOC when you have multiple packs.",
+        "data": {
+          "name": "Battery name",
+          "power_entity": "Charge/discharge power",
+          "soc_entity": "State of charge (SOC)",
+          "charge_positive": "Positive values = charging",
+          "capacity_kwh": "Nominal capacity"
         },
         "data_description": {
-          "battery_min_soc": "Below this level the battery always wins over EV charging.",
+          "name": "Label shown in entity names, e.g. 'Powerwall' or 'LuxPower'.",
+          "capacity_kwh": "Used to weight the average SOC across packs. Leave at 0 if unknown."
+        }
+      },
+      "battery_thresholds": {
+        "title": "Battery thresholds (global)",
+        "description": "These thresholds apply to the battery system considered as a whole.",
+        "data": {
+          "battery_min_soc": "Protected minimum SOC",
+          "battery_target_soc": "Target SOC",
+          "battery_max_charge_w": "Max charge power (total)"
+        },
+        "data_description": {
+          "battery_min_soc": "Below this level batteries always win over EV charging.",
           "battery_target_soc": "Above this level the surplus goes to the EV.",
-          "battery_max_charge_w": "Maximum power the inverter can push into the battery."
+          "battery_max_charge_w": "Maximum total power all batteries together can absorb."
         }
       },
       "chargers": {
@@ -163,7 +181,9 @@
       "battery_allocation": {"name": "Battery allocation"},
       "charger_power": {"name": "Power"},
       "charger_recommended_power": {"name": "Recommended power"},
-      "charger_recommended_current": {"name": "Recommended current"}
+      "charger_recommended_current": {"name": "Recommended current"},
+      "battery_unit_power": {"name": "Power"},
+      "battery_unit_soc": {"name": "SOC"}
     },
     "binary_sensor": {
       "overconsumption": {"name": "Over-consumption"},

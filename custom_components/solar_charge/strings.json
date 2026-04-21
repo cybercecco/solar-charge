@@ -28,7 +28,7 @@
         "menu_options": {
           "pv": "Produzione fotovoltaica",
           "house": "Consumi di casa e rete",
-          "battery": "Batteria di casa",
+          "battery": "Batterie di casa",
           "chargers": "Colonnine di ricarica",
           "thresholds": "Parametri di bilanciamento",
           "notifications": "Notifiche",
@@ -59,21 +59,39 @@
         }
       },
       "battery": {
-        "title": "Batteria di casa",
-        "description": "Se non hai una batteria di accumulo puoi lasciare i campi vuoti.",
+        "title": "Batterie di casa",
+        "description": "Aggiungi, modifica o elimina i pacchi batteria. Potenze e SOC vengono aggregati automaticamente (media pesata per capacità).",
         "data": {
-          "battery_power_entity": "Potenza carica/scarica batteria",
-          "battery_soc_entity": "Stato di carica (SOC)",
-          "battery_charge_positive": "Valori positivi = carica",
-          "battery_capacity_kwh": "Capacità nominale",
-          "battery_min_soc": "SOC minimo protetto",
-          "battery_target_soc": "SOC obiettivo",
-          "battery_max_charge_w": "Potenza massima di carica"
+          "action": "Operazione"
+        }
+      },
+      "battery_form": {
+        "title": "Configura batteria",
+        "description": "Ogni unità ha le proprie entità. La capacità (kWh) viene usata per pesare il SOC medio quando hai più batterie.",
+        "data": {
+          "name": "Nome batteria",
+          "power_entity": "Entità potenza carica/scarica",
+          "soc_entity": "Entità Stato di carica (SOC)",
+          "charge_positive": "Valori positivi = carica",
+          "capacity_kwh": "Capacità nominale"
         },
         "data_description": {
-          "battery_min_soc": "Sotto questa soglia la batteria ha priorità assoluta sulla ricarica auto.",
-          "battery_target_soc": "Sopra questa soglia il surplus va all'auto.",
-          "battery_max_charge_w": "Potenza massima con cui l'inverter può caricare la batteria."
+          "name": "Etichetta mostrata nelle entità, ad es. 'Powerwall' o 'LuxPower'.",
+          "capacity_kwh": "Serve a pesare il SOC medio tra più pacchi. Lascia a 0 se non la conosci."
+        }
+      },
+      "battery_thresholds": {
+        "title": "Soglie batterie (globali)",
+        "description": "Queste soglie si applicano al sistema di batterie considerato come unico.",
+        "data": {
+          "battery_min_soc": "SOC minimo protetto",
+          "battery_target_soc": "SOC obiettivo",
+          "battery_max_charge_w": "Potenza massima di carica (totale)"
+        },
+        "data_description": {
+          "battery_min_soc": "Sotto questa soglia le batterie hanno priorità assoluta sulla ricarica auto.",
+          "battery_target_soc": "Sopra questa soglia il surplus va alla ricarica auto.",
+          "battery_max_charge_w": "Somma massima di potenza che tutte le batterie possono assorbire."
         }
       },
       "chargers": {
@@ -177,7 +195,9 @@
       "battery_allocation": {"name": "Allocazione batteria"},
       "charger_power": {"name": "Potenza"},
       "charger_recommended_power": {"name": "Potenza consigliata"},
-      "charger_recommended_current": {"name": "Corrente consigliata"}
+      "charger_recommended_current": {"name": "Corrente consigliata"},
+      "battery_unit_power": {"name": "Potenza"},
+      "battery_unit_soc": {"name": "SOC"}
     },
     "binary_sensor": {
       "overconsumption": {"name": "Sovraconsumo"},
