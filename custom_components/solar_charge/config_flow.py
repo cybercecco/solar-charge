@@ -107,16 +107,22 @@ from .const import (
 # Selector helpers
 # ---------------------------------------------------------------------------
 def _power_entity_selector(multiple: bool = False) -> selector.EntitySelector:
+    # No device_class filter: many power sensors (custom integrations,
+    # template, MQTT, Modbus...) do not declare device_class="power" and
+    # would otherwise be hidden from the picker. The user knows what they
+    # select; we simply filter by domain.
     return selector.EntitySelector(
         selector.EntitySelectorConfig(
-            domain=["sensor", "input_number"], device_class="power", multiple=multiple
+            domain=["sensor", "input_number"], multiple=multiple
         )
     )
 
 
 def _soc_entity_selector() -> selector.EntitySelector:
+    # Same reasoning as _power_entity_selector: don't require
+    # device_class="battery" because many SOC sensors omit it.
     return selector.EntitySelector(
-        selector.EntitySelectorConfig(domain=["sensor", "input_number"], device_class="battery")
+        selector.EntitySelectorConfig(domain=["sensor", "input_number"])
     )
 
 
