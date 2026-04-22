@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.8.0";
+const CARD_VERSION = "0.9.0";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -174,7 +174,10 @@ class SolarChargeCard extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
       <ha-card>
-        ${this._config.title ? `<div class="title">${this._config.title}</div>` : ""}
+        <div class="header">
+          ${this._config.title ? `<div class="title">${this._config.title}</div>` : '<div class="title"></div>'}
+          ${this._modeChipsHTML()}
+        </div>
         <div class="stage">
           <svg class="wires" preserveAspectRatio="none"></svg>
           <div class="nodes">
@@ -192,7 +195,7 @@ class SolarChargeCard extends HTMLElement {
             </div>
           </div>
         </div>
-        ${this._footerHTML()}
+        ${this._boostBarHTML()}
       </ha-card>
     `;
 
@@ -203,20 +206,7 @@ class SolarChargeCard extends HTMLElement {
   }
 
   _nodeHTML(kind, label, iconPath, opts = {}) {
-    const {
-      large = false,
-      bidirectional = false,
-      dataKey = kind,
-      action = null, // { type: "boost-charger", idx: 0 } | { type: "boost-battery" }
-    } = opts;
-    const actionBtn = action
-      ? `<button class="node-action" type="button"
-               data-action="${action.type}"
-               ${action.idx !== undefined ? `data-idx="${action.idx}"` : ""}
-               title="Boost">
-           <svg viewBox="0 0 24 24"><path d="M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z"/></svg>
-         </button>`
-      : "";
+    const { large = false, bidirectional = false, dataKey = kind } = opts;
     return `
       <div class="node ${kind} ${large ? "large" : ""}"
            data-kind="${kind}" data-key="${dataKey}">
@@ -226,7 +216,6 @@ class SolarChargeCard extends HTMLElement {
           </svg>
           <div class="value"></div>
           ${bidirectional ? '<div class="flow"></div>' : ""}
-          ${actionBtn}
         </div>
         <div class="label">${label}</div>
       </div>
@@ -235,22 +224,17 @@ class SolarChargeCard extends HTMLElement {
 
   _batteriesHTML() {
     const list = this._resolveBatteries();
-    const boostAction =
-      this._config.boost_battery_entity ? { type: "boost-battery" } : null;
     if (!list.length) {
       return this._nodeHTML("battery", "Battery", ICONS.battery, {
         bidirectional: true,
         dataKey: "battery:_main",
-        action: boostAction,
       });
     }
-    // Attach the global battery boost button to the first battery balloon
     return list
       .map((b, i) =>
         this._nodeHTML("battery", b.name || `Battery ${i + 1}`, ICONS.battery, {
           bidirectional: true,
           dataKey: `battery:${b.id ?? i}`,
-          action: i === 0 ? boostAction : null,
         })
       )
       .join("");
@@ -270,30 +254,57 @@ class SolarChargeCard extends HTMLElement {
       .map((ch, i) =>
         this._nodeHTML("charger", ch.name || `EV ${i + 1}`, ICONS.charger, {
           dataKey: `charger:${i}`,
-          action: ch.boost_entity ? { type: "boost-charger", idx: i } : null,
         })
       )
       .join("");
   }
 
-  _footerHTML() {
-    const c = this._config;
-    if (!c.mode_entity) return "";
-    // Boost is now embedded into the individual wallbox/battery balloons,
-    // so the footer only hosts the global operating mode (off/balanced/fast).
+  _modeChipsHTML() {
+    if (!this._config.mode_entity) return "";
     const modes = ["off", "balanced", "fast"];
     return `
-      <div class="footer">
-        <div class="modes">
-          ${modes
-            .map(
-              (m) =>
-                `<button class="chip" data-action="mode" data-value="${m}">${m}</button>`
-            )
-            .join("")}
-        </div>
+      <div class="modes">
+        ${modes
+          .map(
+            (m) =>
+              `<button class="chip" data-action="mode" data-value="${m}">${m}</button>`
+          )
+          .join("")}
       </div>
     `;
+  }
+
+  _boostBarHTML() {
+    const c = this._config;
+    const chargers = c.chargers || [];
+    const boostableCharges = chargers.filter((ch) => ch.boost_entity);
+    const hasBattery = !!c.boost_battery_entity;
+    if (!boostableCharges.length && !hasBattery) return "";
+
+    const btn = (cls, action, attrs, icon, label) => `
+      <button class="boost-btn ${cls}" data-action="${action}" ${attrs}>
+        <svg viewBox="0 0 24 24"><path d="${icon}"/></svg>
+        <span>${label}</span>
+      </button>`;
+
+    const boltIcon = "M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z";
+
+    const chargerBtns = boostableCharges
+      .map((ch, i) =>
+        btn(
+          "ev",
+          "boost-charger",
+          `data-idx="${chargers.indexOf(ch)}"`,
+          boltIcon,
+          `Boost ${ch.name || `EV ${i + 1}`}`
+        )
+      )
+      .join("");
+    const batteryBtn = hasBattery
+      ? btn("bat", "boost-battery", "", boltIcon, "Boost Battery")
+      : "";
+
+    return `<div class="boost-bar">${chargerBtns}${batteryBtn}</div>`;
   }
 
   // ------------------------------------------------------------------
@@ -638,20 +649,58 @@ class SolarChargeCard extends HTMLElement {
           var(--ha-card-background, var(--card-background-color, #1c1f24));
         color: var(--primary-text-color, #e8e8e8);
         overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        min-height: 460px;
+      }
+
+      /* Header: title + compact mode chips (always takes minimal vertical
+         space; does NOT count in the 3:1 stage/boost ratio). */
+      .header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 6px;
+        padding: 0 2px;
+        flex-wrap: wrap;
       }
       .title {
         font-size: 1rem;
         font-weight: 600;
         letter-spacing: 0.02em;
         opacity: 0.9;
-        margin-bottom: 10px;
-        padding-left: 4px;
       }
+      .modes {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        font-family: inherit;
+        font-size: 0.7rem;
+        color: var(--primary-text-color, #ddd);
+        background: rgba(255,255,255,0.04);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 999px;
+        padding: 4px 11px;
+        cursor: pointer;
+        text-transform: capitalize;
+        transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+      }
+      .chip:hover { background: rgba(255,255,255,0.09); }
+      .chip.active {
+        background: rgba(102,187,106,0.18);
+        border-color: ${NODE_COLORS.home};
+        color: #e6ffe9;
+      }
+
+      /* Stage (graph area): gets 3 parts of the vertical space. */
       .stage {
         position: relative;
         width: 100%;
-        aspect-ratio: 16 / 10;
-        min-height: 360px;
+        flex: 3;
+        min-height: 260px;
       }
       .wires {
         position: absolute;
@@ -666,16 +715,16 @@ class SolarChargeCard extends HTMLElement {
         height: 100%;
         display: grid;
         grid-template-rows: 1fr 1.2fr 1fr;
-        gap: 8px;
-        padding: 4px 8px;
+        gap: 4px;
+        padding: 2px 4px;
         box-sizing: border-box;
       }
       .row {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 10px;
-        padding: 0 4px;
+        gap: 8px;
+        min-width: 0;
       }
       .row.top { justify-content: center; }
       .row.middle { align-items: center; }
@@ -683,7 +732,7 @@ class SolarChargeCard extends HTMLElement {
       .spacer { flex: 1; }
       .group {
         display: flex;
-        gap: 14px;
+        gap: 10px;
         align-items: flex-end;
         flex-wrap: wrap;
       }
@@ -694,7 +743,7 @@ class SolarChargeCard extends HTMLElement {
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 6px;
+        gap: 4px;
         opacity: 0.78;
         transition: opacity 260ms ease, transform 260ms ease;
         flex-shrink: 0;
@@ -702,10 +751,10 @@ class SolarChargeCard extends HTMLElement {
       .node.active { opacity: 1; }
       .circle {
         position: relative;
-        width: 92px;
-        height: 92px;
+        width: 72px;
+        height: 72px;
         border-radius: 50%;
-        border: 2.5px solid var(--node-color, #555);
+        border: 2px solid var(--node-color, #555);
         background:
           radial-gradient(circle at 50% 30%, rgba(255,255,255,0.06), transparent 70%),
           rgba(0,0,0,0.25);
@@ -713,78 +762,48 @@ class SolarChargeCard extends HTMLElement {
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        backdrop-filter: blur(2px);
         box-shadow: 0 0 0 0 var(--node-color);
         transition: box-shadow 260ms ease;
       }
       .node.active .circle {
-        box-shadow: 0 0 22px -4px var(--node-color);
+        box-shadow: 0 0 18px -4px var(--node-color);
       }
-      .node.large .circle { width: 116px; height: 116px; }
+      .node.large .circle {
+        width: 92px;
+        height: 92px;
+        border-width: 2.5px;
+      }
       .icon {
-        width: 26px;
-        height: 26px;
+        width: 20px;
+        height: 20px;
         fill: var(--node-color);
         filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
       }
-      .node.large .icon { width: 32px; height: 32px; }
+      .node.large .icon { width: 26px; height: 26px; }
       .value {
-        margin-top: 4px;
-        font-size: 0.82rem;
+        margin-top: 2px;
+        font-size: 0.7rem;
         font-weight: 600;
         letter-spacing: 0.01em;
         color: var(--node-color);
         text-shadow: 0 1px 2px rgba(0,0,0,0.5);
         white-space: nowrap;
       }
-      .node.large .value { font-size: 0.95rem; }
+      .node.large .value { font-size: 0.82rem; }
       .sub {
         position: absolute;
-        top: 6px;
+        top: 4px;
         left: 50%;
         transform: translateX(-50%);
-        font-size: 0.7rem;
+        font-size: 0.62rem;
         opacity: 0.75;
         color: var(--node-color);
       }
       .label {
-        font-size: 0.78rem;
+        font-size: 0.7rem;
         opacity: 0.75;
         letter-spacing: 0.02em;
-      }
-
-      /* Embedded boost action button (top-right corner of the balloon) */
-      .node-action {
-        position: absolute;
-        top: -6px;
-        right: -6px;
-        width: 26px;
-        height: 26px;
-        border-radius: 50%;
-        border: 1.5px solid var(--node-color);
-        background: rgba(20, 22, 28, 0.85);
-        color: var(--node-color);
-        cursor: pointer;
-        padding: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        opacity: 0.65;
-        transition: opacity 200ms ease, transform 180ms ease,
-                    box-shadow 200ms ease, background 200ms ease;
-        z-index: 2;
-      }
-      .node-action:hover { opacity: 1; transform: scale(1.08); }
-      .node-action svg {
-        width: 13px;
-        height: 13px;
-        fill: currentColor;
-      }
-      .node-action.active {
-        opacity: 1;
-        background: var(--node-color);
-        color: #0b0d12;
-        box-shadow: 0 0 14px -2px var(--node-color);
+        margin-top: 1px;
       }
 
       .node.solar  { --node-color: ${NODE_COLORS.solar}; }
@@ -793,55 +812,56 @@ class SolarChargeCard extends HTMLElement {
       .node.home   { --node-color: ${NODE_COLORS.home}; }
       .node.charger{ --node-color: ${NODE_COLORS.charger}; }
 
-      .footer {
+      /* Boost bar (bottom 1/4): dedicated, exclusive, prominent. */
+      .boost-bar {
+        flex: 1;
+        min-height: 80px;
+        margin-top: 10px;
+        padding-top: 12px;
+        border-top: 1px solid rgba(255,255,255,0.07);
         display: flex;
-        flex-direction: column;
-        gap: 8px;
-        margin-top: 12px;
-        padding-top: 10px;
-        border-top: 1px solid rgba(255,255,255,0.06);
-      }
-      .modes, .boosts {
-        display: flex;
-        gap: 6px;
+        gap: 10px;
+        align-items: center;
+        justify-content: center;
         flex-wrap: wrap;
       }
-      .chip {
+      .boost-btn {
+        --btn-color: #888;
         font-family: inherit;
-        font-size: 0.75rem;
-        color: var(--primary-text-color, #ddd);
-        background: rgba(255,255,255,0.05);
-        border: 1px solid rgba(255,255,255,0.12);
+        font-size: 0.82rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: var(--btn-color);
+        background: rgba(255,255,255,0.03);
+        border: 1.5px solid var(--btn-color);
         border-radius: 999px;
-        padding: 5px 12px;
+        padding: 9px 18px;
         cursor: pointer;
-        text-transform: capitalize;
-        transition: background 180ms ease, border-color 180ms ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        transition: background 180ms ease, color 180ms ease,
+                    box-shadow 200ms ease, transform 150ms ease;
       }
-      .chip:hover { background: rgba(255,255,255,0.1); }
-      .chip.active {
-        background: rgba(102,187,106,0.18);
-        border-color: ${NODE_COLORS.home};
-        color: #e6ffe9;
-      }
-      .chip.boost.bat.active {
-        background: rgba(236,64,122,0.2);
-        border-color: ${NODE_COLORS.battery};
-        color: #ffe5ee;
-      }
-      .chip.boost.ev.active {
-        background: rgba(38,198,218,0.2);
-        border-color: ${NODE_COLORS.charger};
-        color: #dffaff;
+      .boost-btn svg { width: 14px; height: 14px; fill: currentColor; }
+      .boost-btn:hover { background: rgba(255,255,255,0.08); transform: translateY(-1px); }
+      .boost-btn.ev  { --btn-color: ${NODE_COLORS.charger}; }
+      .boost-btn.bat { --btn-color: ${NODE_COLORS.battery}; }
+      .boost-btn.active {
+        color: #0b0d12;
+        background: var(--btn-color);
+        box-shadow: 0 0 18px -2px var(--btn-color);
       }
 
       @media (max-width: 520px) {
-        .circle { width: 76px; height: 76px; }
-        .node.large .circle { width: 96px; height: 96px; }
-        .icon { width: 22px; height: 22px; }
-        .node.large .icon { width: 28px; height: 28px; }
-        .value { font-size: 0.72rem; }
-        .node.large .value { font-size: 0.85rem; }
+        .circle { width: 58px; height: 58px; }
+        .node.large .circle { width: 74px; height: 74px; }
+        .icon { width: 17px; height: 17px; }
+        .node.large .icon { width: 22px; height: 22px; }
+        .value { font-size: 0.64rem; }
+        .node.large .value { font-size: 0.72rem; }
+        .label { font-size: 0.64rem; }
+        .boost-btn { font-size: 0.74rem; padding: 7px 13px; }
       }
     `;
   }
