@@ -83,6 +83,7 @@ from .const import (
     CONF_GRID_POWER_ENTITY,
     CONF_HOUSE_POWER_ENTITY,
     CONF_HYSTERESIS_W,
+    CONF_MAX_HOUSEHOLD_POWER_W,
     CONF_MIN_PV_SURPLUS_W,
     CONF_NOTIFY_ON_CHARGE_COMPLETE,
     CONF_NOTIFY_ON_MODE_CHANGE,
@@ -101,6 +102,7 @@ from .const import (
     DEFAULT_EV_PHASES,
     DEFAULT_EV_VOLTAGE,
     DEFAULT_HYSTERESIS_W,
+    DEFAULT_MAX_HOUSEHOLD_POWER_W,
     DEFAULT_MIN_PV_SURPLUS_W,
     DEFAULT_OVERCONSUMPTION_W,
     DEFAULT_UPDATE_INTERVAL,
@@ -324,6 +326,12 @@ def _schema_thresholds(defaults: dict[str, Any]) -> vol.Schema:
                 default=d.get(CONF_OVERCONSUMPTION_THRESHOLD_W, DEFAULT_OVERCONSUMPTION_W),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=1000, max=30000, step=100, unit_of_measurement="W")
+            ),
+            vol.Required(
+                CONF_MAX_HOUSEHOLD_POWER_W,
+                default=d.get(CONF_MAX_HOUSEHOLD_POWER_W, DEFAULT_MAX_HOUSEHOLD_POWER_W),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=0, max=30000, step=100, unit_of_measurement="W")
             ),
             vol.Required(
                 CONF_UPDATE_INTERVAL, default=d.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)

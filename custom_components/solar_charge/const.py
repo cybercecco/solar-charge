@@ -70,6 +70,11 @@ CHARGER_PRIORITY: Final = "priority"        # 1 = highest; lower ints get energy
 
 # Behaviour / thresholds
 CONF_OVERCONSUMPTION_THRESHOLD_W: Final = "overconsumption_threshold_w"
+# Hard cap on total instantaneous household power (grid + battery_discharge
+# + pv consumed locally). When > 0 the coordinator will CLAMP the EV
+# allocation so that `house_non_ev + ev_total <= cap`, regardless of boost
+# or mode. 0 disables the cap.
+CONF_MAX_HOUSEHOLD_POWER_W: Final = "max_household_power_w"
 CONF_MIN_PV_SURPLUS_W: Final = "min_pv_surplus_w"
 CONF_HYSTERESIS_W: Final = "hysteresis_w"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
@@ -95,6 +100,7 @@ DEFAULT_BATTERY_MAX_CHARGE_W: Final = 3000
 DEFAULT_HYSTERESIS_W: Final = 150
 DEFAULT_MIN_PV_SURPLUS_W: Final = 300
 DEFAULT_OVERCONSUMPTION_W: Final = 6000
+DEFAULT_MAX_HOUSEHOLD_POWER_W: Final = 0  # 0 = no cap
 DEFAULT_UPDATE_INTERVAL: Final = 10  # seconds
 DEFAULT_CHARGER_DISTRIBUTION: Final = "priority"
 

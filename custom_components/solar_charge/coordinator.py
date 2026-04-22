@@ -42,6 +42,7 @@ from .const import (
     CONF_HOUSE_POWER_ENTITY,
     CONF_HYSTERESIS_W,
     CONF_MIN_PV_SURPLUS_W,
+    CONF_MAX_HOUSEHOLD_POWER_W,
     CONF_OVERCONSUMPTION_THRESHOLD_W,
     CONF_PV_POWER_ENTITIES,
     CONF_UPDATE_INTERVAL,
@@ -55,6 +56,7 @@ from .const import (
     DEFAULT_EV_VOLTAGE,
     DEFAULT_HYSTERESIS_W,
     DEFAULT_MIN_PV_SURPLUS_W,
+    DEFAULT_MAX_HOUSEHOLD_POWER_W,
     DEFAULT_OVERCONSUMPTION_W,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
@@ -157,6 +159,9 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
         self.hysteresis: int = int(self._data.get(CONF_HYSTERESIS_W, DEFAULT_HYSTERESIS_W))
         self.overconsumption_w: int = int(
             self._data.get(CONF_OVERCONSUMPTION_THRESHOLD_W, DEFAULT_OVERCONSUMPTION_W)
+        )
+        self.max_household_w: int = int(
+            self._data.get(CONF_MAX_HOUSEHOLD_POWER_W, DEFAULT_MAX_HOUSEHOLD_POWER_W)
         )
         self._last_total_reco: float = 0.0
         self._per_charger_last_reco: dict[str, float] = {}
@@ -472,6 +477,20 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
                         ev_total = min(ev_max_total, ev_candidate)
                     else:
                         batt_target = min(batt_max, available)
+
+        # Hard safety cap: no matter the mode (boost included), the total
+        # instantaneous household draw must not exceed max_household_w.
+        # `base_house` already excludes current EV draw, so the headroom
+        # available to EVs is `cap - base_house`.
+        if self.max_household_w > 0:
+            ev_cap = max(0.0, self.max_household_w - base_house)
+            if ev_total > ev_cap:
+                _LOGGER.debug(
+                    "EV allocation capped by household limit: %.0f -> %.0f "
+                    "(cap=%d, base_house=%.0f)",
+                    ev_total, ev_cap, self.max_household_w, base_house,
+                )
+                ev_total = ev_cap
 
         # Global hysteresis
         if ev_total > 0 and abs(ev_total - self._last_total_reco) < self.hysteresis:

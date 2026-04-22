@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.7.0";
+const CARD_VERSION = "0.8.0";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -203,7 +203,20 @@ class SolarChargeCard extends HTMLElement {
   }
 
   _nodeHTML(kind, label, iconPath, opts = {}) {
-    const { large = false, bidirectional = false, dataKey = kind } = opts;
+    const {
+      large = false,
+      bidirectional = false,
+      dataKey = kind,
+      action = null, // { type: "boost-charger", idx: 0 } | { type: "boost-battery" }
+    } = opts;
+    const actionBtn = action
+      ? `<button class="node-action" type="button"
+               data-action="${action.type}"
+               ${action.idx !== undefined ? `data-idx="${action.idx}"` : ""}
+               title="Boost">
+           <svg viewBox="0 0 24 24"><path d="M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z"/></svg>
+         </button>`
+      : "";
     return `
       <div class="node ${kind} ${large ? "large" : ""}"
            data-kind="${kind}" data-key="${dataKey}">
@@ -213,6 +226,7 @@ class SolarChargeCard extends HTMLElement {
           </svg>
           <div class="value"></div>
           ${bidirectional ? '<div class="flow"></div>' : ""}
+          ${actionBtn}
         </div>
         <div class="label">${label}</div>
       </div>
@@ -221,18 +235,22 @@ class SolarChargeCard extends HTMLElement {
 
   _batteriesHTML() {
     const list = this._resolveBatteries();
+    const boostAction =
+      this._config.boost_battery_entity ? { type: "boost-battery" } : null;
     if (!list.length) {
-      // Fallback: single legacy battery from config
       return this._nodeHTML("battery", "Battery", ICONS.battery, {
         bidirectional: true,
         dataKey: "battery:_main",
+        action: boostAction,
       });
     }
+    // Attach the global battery boost button to the first battery balloon
     return list
       .map((b, i) =>
         this._nodeHTML("battery", b.name || `Battery ${i + 1}`, ICONS.battery, {
           bidirectional: true,
           dataKey: `battery:${b.id ?? i}`,
+          action: i === 0 ? boostAction : null,
         })
       )
       .join("");
@@ -241,7 +259,6 @@ class SolarChargeCard extends HTMLElement {
   _chargersHTML() {
     const chargers = this._config.chargers || [];
     if (!chargers.length) {
-      // Legacy single-charger support if ev_entity present
       if (this._config.ev_entity || this._config.ev_recommended_entity) {
         return this._nodeHTML("charger", "Wallbox", ICONS.charger, {
           dataKey: "charger:_main",
@@ -253,6 +270,7 @@ class SolarChargeCard extends HTMLElement {
       .map((ch, i) =>
         this._nodeHTML("charger", ch.name || `EV ${i + 1}`, ICONS.charger, {
           dataKey: `charger:${i}`,
+          action: ch.boost_entity ? { type: "boost-charger", idx: i } : null,
         })
       )
       .join("");
@@ -260,40 +278,22 @@ class SolarChargeCard extends HTMLElement {
 
   _footerHTML() {
     const c = this._config;
-    const hasControls =
-      c.mode_entity || c.boost_battery_entity || (c.chargers || []).some((x) => x.boost_entity);
-    if (!hasControls) return "";
-
-    const modes = ["off", "balanced", "fast", "boost_car", "boost_battery"];
-    const modeButtons = c.mode_entity
-      ? `<div class="modes">
-           ${modes
-             .map(
-               (m) =>
-                 `<button class="chip" data-action="mode" data-value="${m}">${m.replace(
-                   "_",
-                   " "
-                 )}</button>`
-             )
-             .join("")}
-         </div>`
-      : "";
-
-    const boostButtons = `
-      <div class="boosts">
-        ${c.boost_battery_entity ? `<button class="chip boost bat" data-action="boost-battery">Boost battery</button>` : ""}
-        ${(c.chargers || [])
-          .filter((ch) => ch.boost_entity)
-          .map(
-            (ch, i) =>
-              `<button class="chip boost ev" data-action="boost-charger" data-idx="${i}">Boost ${
-                ch.name || `EV ${i + 1}`
-              }</button>`
-          )
-          .join("")}
-      </div>`;
-
-    return `<div class="footer">${modeButtons}${boostButtons}</div>`;
+    if (!c.mode_entity) return "";
+    // Boost is now embedded into the individual wallbox/battery balloons,
+    // so the footer only hosts the global operating mode (off/balanced/fast).
+    const modes = ["off", "balanced", "fast"];
+    return `
+      <div class="footer">
+        <div class="modes">
+          ${modes
+            .map(
+              (m) =>
+                `<button class="chip" data-action="mode" data-value="${m}">${m}</button>`
+            )
+            .join("")}
+        </div>
+      </div>
+    `;
   }
 
   // ------------------------------------------------------------------
@@ -369,13 +369,14 @@ class SolarChargeCard extends HTMLElement {
       });
     }
 
-    // Footer state (selected mode, boost active)
+    // Mode chips in the footer
     if (c.mode_entity) {
       const m = stateStr(this._hass, c.mode_entity);
       this.shadowRoot.querySelectorAll(".modes .chip").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.value === m);
       });
     }
+    // Per-balloon boost buttons
     if (c.boost_battery_entity) {
       const on = stateStr(this._hass, c.boost_battery_entity) === "on";
       const btn = this.shadowRoot.querySelector('[data-action="boost-battery"]');
@@ -388,6 +389,10 @@ class SolarChargeCard extends HTMLElement {
         `[data-action="boost-charger"][data-idx="${i}"]`
       );
       if (btn) btn.classList.toggle("active", on);
+      const node = this.shadowRoot.querySelector(
+        `.node[data-key="${CSS.escape(`charger:${i}`)}"]`
+      );
+      if (node) node.classList.toggle("boost", on);
     });
 
     // Derive flow directions and redraw wires
@@ -469,27 +474,30 @@ class SolarChargeCard extends HTMLElement {
     if (!stage) return;
 
     const rect = stage.getBoundingClientRect();
+    if (rect.width < 2 || rect.height < 2) return; // not laid out yet
     svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
-    svg.setAttribute("width", rect.width);
-    svg.setAttribute("height", rect.height);
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
 
-    const center = (el) => {
-      const r = el.getBoundingClientRect();
+    // Geometry is computed on the `.circle` element (not `.node`, which
+    // includes the label underneath and would shift the center down).
+    const circleGeom = (nodeEl) => {
+      const c = nodeEl.querySelector(".circle");
+      const r = c.getBoundingClientRect();
       return {
-        x: r.left - rect.left + r.width / 2,
-        y: r.top - rect.top + r.height / 2,
+        cx: r.left - rect.left + r.width / 2,
+        cy: r.top - rect.top + r.height / 2,
+        r: r.width / 2,
       };
     };
-    const homeC = center(home);
 
-    // Compute the port on the edge of the home circle closest to the source
-    const radius = home.querySelector(".circle").getBoundingClientRect().width / 2;
+    const homeG = circleGeom(home);
 
-    const edgePoint = (from, to, r) => {
-      const dx = to.x - from.x;
-      const dy = to.y - from.y;
+    const edgePoint = (fromX, fromY, toX, toY, r) => {
+      const dx = toX - fromX;
+      const dy = toY - fromY;
       const len = Math.hypot(dx, dy) || 1;
-      return { x: to.x - (dx / len) * r, y: to.y - (dy / len) * r };
+      return { x: toX - (dx / len) * r, y: toY - (dy / len) * r };
     };
 
     const wires = [];
@@ -497,10 +505,11 @@ class SolarChargeCard extends HTMLElement {
     sources.forEach((node) => {
       const key = node.dataset.key;
       const kind = node.dataset.kind;
-      const srcC = center(node);
-      const srcR = node.querySelector(".circle").getBoundingClientRect().width / 2;
-      const srcEdge = edgePoint(homeC, srcC, srcR);
-      const homeEdge = edgePoint(srcC, homeC, radius);
+      const src = circleGeom(node);
+      // Edge of the source circle pointing toward home.
+      const srcEdge = edgePoint(homeG.cx, homeG.cy, src.cx, src.cy, src.r);
+      // Edge of the home circle pointing toward this source.
+      const homeEdge = edgePoint(src.cx, src.cy, homeG.cx, homeG.cy, homeG.r);
 
       const d = curvePath(srcEdge.x, srcEdge.y, homeEdge.x, homeEdge.y);
       const color = NODE_COLORS[kind] || NODE_COLORS.muted;
@@ -641,8 +650,8 @@ class SolarChargeCard extends HTMLElement {
       .stage {
         position: relative;
         width: 100%;
-        aspect-ratio: 16 / 11;
-        min-height: 320px;
+        aspect-ratio: 16 / 10;
+        min-height: 360px;
       }
       .wires {
         position: absolute;
@@ -656,8 +665,10 @@ class SolarChargeCard extends HTMLElement {
         width: 100%;
         height: 100%;
         display: grid;
-        grid-template-rows: 1fr 1.35fr 1fr;
-        gap: 0;
+        grid-template-rows: 1fr 1.2fr 1fr;
+        gap: 8px;
+        padding: 4px 8px;
+        box-sizing: border-box;
       }
       .row {
         display: flex;
@@ -684,8 +695,9 @@ class SolarChargeCard extends HTMLElement {
         flex-direction: column;
         align-items: center;
         gap: 6px;
-        opacity: 0.55;
+        opacity: 0.78;
         transition: opacity 260ms ease, transform 260ms ease;
+        flex-shrink: 0;
       }
       .node.active { opacity: 1; }
       .circle {
@@ -739,6 +751,40 @@ class SolarChargeCard extends HTMLElement {
         font-size: 0.78rem;
         opacity: 0.75;
         letter-spacing: 0.02em;
+      }
+
+      /* Embedded boost action button (top-right corner of the balloon) */
+      .node-action {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        width: 26px;
+        height: 26px;
+        border-radius: 50%;
+        border: 1.5px solid var(--node-color);
+        background: rgba(20, 22, 28, 0.85);
+        color: var(--node-color);
+        cursor: pointer;
+        padding: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        opacity: 0.65;
+        transition: opacity 200ms ease, transform 180ms ease,
+                    box-shadow 200ms ease, background 200ms ease;
+        z-index: 2;
+      }
+      .node-action:hover { opacity: 1; transform: scale(1.08); }
+      .node-action svg {
+        width: 13px;
+        height: 13px;
+        fill: currentColor;
+      }
+      .node-action.active {
+        opacity: 1;
+        background: var(--node-color);
+        color: #0b0d12;
+        box-shadow: 0 0 14px -2px var(--node-color);
       }
 
       .node.solar  { --node-color: ${NODE_COLORS.solar}; }

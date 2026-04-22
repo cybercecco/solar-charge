@@ -151,6 +151,7 @@
           "min_pv_surplus_w": "Minimum PV surplus",
           "hysteresis_w": "Hysteresis",
           "overconsumption_threshold_w": "Over-consumption threshold",
+          "max_household_power_w": "Max household power cap (0 = disabled)",
           "update_interval": "Recompute interval"
         },
         "data_description": {

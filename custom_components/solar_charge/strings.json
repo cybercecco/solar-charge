@@ -157,6 +157,7 @@
           "min_pv_surplus_w": "Surplus PV minimo",
           "hysteresis_w": "Isteresi",
           "overconsumption_threshold_w": "Soglia sovraconsumo",
+          "max_household_power_w": "Potenza massima casa (cap, 0 = disabilitato)",
           "update_interval": "Intervallo di ricalcolo"
         },
         "data_description": {
@@ -165,6 +166,7 @@
           "min_pv_surplus_w": "Soglia di surplus per iniziare la ricarica.",
           "hysteresis_w": "Banda morta per evitare oscillazioni.",
           "overconsumption_threshold_w": "Soglia totale per l'allarme sovraconsumo.",
+          "max_household_power_w": "Limite hard sull'assorbimento totale della casa: anche con boost attivo la ricarica EV viene limitata per non superarlo. Imposta 0 per disabilitare.",
           "update_interval": "Frequenza di ricalcolo in secondi."
         }
       },
