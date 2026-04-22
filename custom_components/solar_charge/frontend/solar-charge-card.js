@@ -1,95 +1,125 @@
 /*!
  * Solar Charge Card — Lovelace custom card
- * Tesla-like energy flow visualisation with animated connection lines,
- * plus a compact tile row for multiple chargers.
  *
- * Registers: <solar-charge-card>
- * Also provides a visual editor: <solar-charge-card-editor>
+ * Graph-style visualisation inspired by Home Assistant's energy
+ * dashboard: circular colored nodes connected to a central Home hub by
+ * curved SVG lines with animated flow particles.
  *
- * Drop this file into /config/www/solar-charge-card/ and add it as a resource:
- *   url: /local/solar-charge-card/solar-charge-card.js
- *   type: module
+ * Written in plain JS (no Lit / no CDN imports) for maximum reliability:
+ * the script self-registers `solar-charge-card` and pushes an entry into
+ * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.7.0";
 
+// eslint-disable-next-line no-console
 console.info(
   `%c SOLAR-CHARGE-CARD %c v${CARD_VERSION} `,
   "color:white;background:#1f6feb;font-weight:700;padding:2px 6px;border-radius:3px 0 0 3px;",
   "color:#1f6feb;background:#0d1117;padding:2px 6px;border-radius:0 3px 3px 0;"
 );
 
-import {
-  LitElement,
-  html,
-  css,
-  svg,
-  nothing,
-} from "https://unpkg.com/lit-element@4.0.4/lit-element.js?module";
+// ---------------------------------------------------------------------------
+// Push into the card picker immediately. Doing this BEFORE any class
+// definitions means the picker will always list us, even if something later
+// in the script were to fail. We still guard against duplicate pushes
+// because the script may be loaded both via add_extra_js_url and as a
+// Lovelace resource.
+// ---------------------------------------------------------------------------
+window.customCards = window.customCards || [];
+if (!window.customCards.some((c) => c.type === "solar-charge-card")) {
+  window.customCards.push({
+    type: "solar-charge-card",
+    name: "Solar Charge Card",
+    description:
+      "Tesla-like energy flow graph for the Solar Charge Balancer integration.",
+    preview: true,
+    documentationURL: "https://github.com/cybercecco/solar-charge",
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Utility helpers
 // ---------------------------------------------------------------------------
-const fmtW = (v) => {
-  if (v === null || v === undefined || isNaN(v)) return "—";
-  const n = Number(v);
-  if (Math.abs(n) >= 1000) return `${(n / 1000).toFixed(2)} kW`;
-  return `${n.toFixed(0)} W`;
+const NODE_COLORS = {
+  solar: "#FFB300",
+  grid: "#42A5F5",
+  battery: "#EC407A",
+  home: "#66BB6A",
+  charger: "#26C6DA",
+  muted: "#5a5a5a",
 };
 
-const fmtA = (v) => {
-  if (v === null || v === undefined || isNaN(v)) return "—";
-  return `${Number(v).toFixed(1)} A`;
+const ICONS = {
+  solar:
+    "M12 4V2m0 20v-2M4 12H2m20 0h-2M5.64 5.64L4.22 4.22m15.56 15.56l-1.42-1.42M5.64 18.36l-1.42 1.42M19.78 4.22l-1.42 1.42M12 6a6 6 0 100 12 6 6 0 000-12z",
+  grid: "M6 2v4h4V2h4v4h4v4h-4v4h4v4h-4v-4h-4v4H6v-4H2v-4h4v-4H2V6h4V2h0z",
+  battery:
+    "M8 4h8v2h2v16H6V6h2V4zm1 3v13h6V7H9z",
+  home: "M12 3l9 8h-3v10h-5v-6H11v6H6V11H3l9-8z",
+  charger:
+    "M14 7V4H5v18h9v-3h1a3 3 0 003-3V10a3 3 0 00-3-3h-1zm2 4h1v4h-1v-4z",
 };
 
-const pct = (v) => (v === null || v === undefined || isNaN(v) ? "—" : `${Number(v).toFixed(0)}%`);
+const stateObj = (hass, id) => (id && hass ? hass.states[id] : undefined);
 
 const stateNum = (hass, id) => {
-  if (!id) return 0;
-  const s = hass?.states?.[id];
-  if (!s || s.state === "unavailable" || s.state === "unknown") return 0;
+  const s = stateObj(hass, id);
+  if (!s || ["unknown", "unavailable", ""].includes(s.state)) return 0;
   const n = Number(s.state);
-  return isNaN(n) ? 0 : n;
+  return Number.isFinite(n) ? n : 0;
 };
 
 const stateStr = (hass, id) => {
-  if (!id) return null;
-  const s = hass?.states?.[id];
-  if (!s) return null;
-  return s.state;
+  const s = stateObj(hass, id);
+  return s ? String(s.state) : "";
+};
+
+const fmtPower = (w) => {
+  if (w === null || w === undefined || isNaN(w)) return "—";
+  const a = Math.abs(w);
+  if (a >= 1000) return `${(w / 1000).toFixed(a >= 10000 ? 1 : 2)} kW`;
+  return `${Math.round(w)} W`;
+};
+
+const fmtPercent = (v) => {
+  if (v === null || v === undefined || isNaN(v)) return "—";
+  return `${Math.round(v)} %`;
+};
+
+// Build a smooth cubic-bezier path between two points. Control points are
+// offset along the dominant axis to produce an elegant S-curve.
+const curvePath = (x1, y1, x2, y2) => {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+  // Dominant axis determines curve bias
+  if (absDx >= absDy) {
+    const mx = (x1 + x2) / 2;
+    return `M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`;
+  }
+  const my = (y1 + y2) / 2;
+  return `M ${x1} ${y1} C ${x1} ${my}, ${x2} ${my}, ${x2} ${y2}`;
 };
 
 // ---------------------------------------------------------------------------
-// Card implementation
+// Main card
 // ---------------------------------------------------------------------------
-class SolarChargeCard extends LitElement {
-  static properties = {
-    hass: { attribute: false },
-    _config: { state: true },
-  };
-
-  setConfig(config) {
-    if (!config) throw new Error("Invalid configuration");
-    this._config = {
-      title: "Solar Charge",
-      pv_entity: "sensor.solar_charge_pv_power",
-      house_entity: "sensor.solar_charge_house_power",
-      grid_entity: "sensor.solar_charge_grid_power",
-      battery_entity: "sensor.solar_charge_battery_power",
-      battery_soc_entity: "sensor.solar_charge_battery_soc",
-      ev_entity: "sensor.solar_charge_ev_power_total",
-      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power_total",
-      mode_entity: "select.solar_charge_balancing_mode",
-      boost_battery_entity: "switch.solar_charge_boost_battery",
-      chargers: [],
-      ...config,
-    };
+class SolarChargeCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._mounted = false;
+    this._config = null;
+    this._hass = null;
+    this._resizeObserver = null;
+    this._onResize = () => this._drawConnections();
   }
 
-  getCardSize() {
-    return 7;
-  }
-
+  // ------------------------------------------------------------------
+  // Lovelace card API
+  // ------------------------------------------------------------------
   static getConfigElement() {
     return document.createElement("solar-charge-card-editor");
   }
@@ -102,627 +132,769 @@ class SolarChargeCard extends LitElement {
       grid_entity: "sensor.solar_charge_grid_power",
       battery_entity: "sensor.solar_charge_battery_power",
       battery_soc_entity: "sensor.solar_charge_battery_soc",
-      ev_entity: "sensor.solar_charge_ev_power_total",
-      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power_total",
-      mode_entity: "select.solar_charge_balancing_mode",
+      ev_recommended_entity: "sensor.solar_charge_ev_recommended_power_total",
+      mode_entity: "select.solar_charge_mode",
       boost_battery_entity: "switch.solar_charge_boost_battery",
       chargers: [],
     };
   }
 
-  // ---------- Rendering ----------
-  render() {
-    if (!this.hass || !this._config) return html``;
-    const c = this._config;
-
-    const pv = stateNum(this.hass, c.pv_entity);
-    const house = stateNum(this.hass, c.house_entity);
-    const grid = stateNum(this.hass, c.grid_entity);
-    const batt = stateNum(this.hass, c.battery_entity);
-    const soc = stateNum(this.hass, c.battery_soc_entity);
-    const ev = stateNum(this.hass, c.ev_entity);
-    const evRec = stateNum(this.hass, c.ev_recommended_entity);
-    const mode = stateStr(this.hass, c.mode_entity);
-    const boostBattery = stateStr(this.hass, c.boost_battery_entity) === "on";
-    const chargers = Array.isArray(c.chargers) ? c.chargers : [];
-
-    const flows = {
-      pvHouse: Math.max(0, Math.min(pv, house)),
-      pvBattery: batt > 0 ? Math.min(batt, pv) : 0,
-      pvEv: Math.max(0, Math.min(pv - house, ev)),
-      pvGrid: grid < 0 ? Math.abs(grid) : 0,
-      gridHouse: grid > 0 ? grid : 0,
-      batteryHouse: batt < 0 ? Math.abs(batt) : 0,
-      batteryEv: batt < 0 && ev > pv ? Math.min(Math.abs(batt), ev - pv) : 0,
-    };
-
-    return html`
-      <ha-card>
-        <div class="header">
-          <div class="title">${c.title}</div>
-          ${mode
-            ? html`<div class="mode-pill" title=${`Modalità: ${mode}`}>
-                <ha-icon icon=${this._modeIcon(mode)}></ha-icon>
-                <span>${mode}</span>
-              </div>`
-            : nothing}
-        </div>
-
-        <div class="stage">
-          ${this._renderSvg(flows)}
-          ${this._renderBalloon("pv", "mdi:solar-power-variant", "FV", pv, "sun")}
-          ${this._renderBalloon("grid", "mdi:transmission-tower", "Rete", grid, grid < 0 ? "export" : "grid")}
-          ${this._renderBalloon("battery", "mdi:home-battery", "Batteria", batt, "battery", soc)}
-          ${this._renderBalloon("house", "mdi:home-lightning-bolt", "Casa", house, "house")}
-          ${this._renderBalloon(
-            "ev",
-            "mdi:car-electric",
-            chargers.length > 1 ? `Auto (${chargers.length})` : "Auto",
-            ev,
-            "ev",
-            null,
-            evRec
-          )}
-        </div>
-
-        ${chargers.length
-          ? html`<div class="chargers">
-              ${chargers.map((ch) => this._renderChargerTile(ch))}
-            </div>`
-          : nothing}
-
-        <div class="controls">
-          <button
-            class=${`boost ${boostBattery ? "active battery" : ""}`}
-            @click=${() => this._toggleBoost(c.boost_battery_entity)}
-            title="Priorità alla batteria di casa"
-          >
-            <ha-icon icon="mdi:home-battery"></ha-icon>
-            Boost batteria
-          </button>
-          <button
-            class="boost reset"
-            @click=${() =>
-              this._callService("select", "select_option", {
-                entity_id: c.mode_entity,
-                option: "balanced",
-              })}
-            title="Ripristina bilanciato"
-          >
-            <ha-icon icon="mdi:scale-balance"></ha-icon>
-            Bilanciato
-          </button>
-        </div>
-      </ha-card>
-    `;
+  getCardSize() {
+    return 6;
   }
 
-  // ---------- Charger tile (multi-wallbox) ----------
-  _renderChargerTile(ch) {
-    const power = stateNum(this.hass, ch.power_entity);
-    const recPow = stateNum(this.hass, ch.recommended_power_entity);
-    const recA = stateNum(this.hass, ch.recommended_current_entity);
-    const boost = stateStr(this.hass, ch.boost_entity) === "on";
-    const charging = stateStr(this.hass, ch.charging_entity) === "on" || power > 200;
+  setConfig(config) {
+    if (!config) throw new Error("Invalid configuration");
+    this._config = { ...config };
+    // Reset mount state → full rebuild on next hass assignment
+    this._mounted = false;
+    if (this._hass) this._render();
+  }
 
-    return html`
-      <div class=${`tile ${charging ? "charging" : ""}`}>
-        <div class="tile-head">
-          <ha-icon icon="mdi:ev-station"></ha-icon>
-          <span class="tile-name">${ch.name || "Colonnina"}</span>
-          ${boost
-            ? html`<span class="boost-pill"><ha-icon icon="mdi:rocket-launch"></ha-icon></span>`
-            : nothing}
-        </div>
-        <div class="tile-main">
-          <div class="tile-power">${fmtW(power)}</div>
-          <div class="tile-sub">
-            <span title="Potenza consigliata">→ ${fmtW(recPow)}</span>
-            ${ch.recommended_current_entity
-              ? html`<span title="Corrente consigliata"> · ${fmtA(recA)}</span>`
-              : nothing}
+  set hass(hass) {
+    const firstRun = !this._hass;
+    this._hass = hass;
+    if (!this._mounted) this._render();
+    else if (!firstRun) this._update();
+  }
+
+  disconnectedCallback() {
+    if (this._resizeObserver) {
+      this._resizeObserver.disconnect();
+      this._resizeObserver = null;
+    }
+    window.removeEventListener("resize", this._onResize);
+  }
+
+  // ------------------------------------------------------------------
+  // Rendering
+  // ------------------------------------------------------------------
+  _render() {
+    if (!this._config) return;
+    this.shadowRoot.innerHTML = `
+      <style>${this._styles()}</style>
+      <ha-card>
+        ${this._config.title ? `<div class="title">${this._config.title}</div>` : ""}
+        <div class="stage">
+          <svg class="wires" preserveAspectRatio="none"></svg>
+          <div class="nodes">
+            <div class="row top">
+              ${this._nodeHTML("solar", "Solar", ICONS.solar)}
+            </div>
+            <div class="row middle">
+              ${this._nodeHTML("grid", "Grid", ICONS.grid, { bidirectional: true })}
+              <div class="spacer"></div>
+              ${this._nodeHTML("home", "Home", ICONS.home, { large: true })}
+            </div>
+            <div class="row bottom">
+              <div class="group batteries">${this._batteriesHTML()}</div>
+              <div class="group chargers">${this._chargersHTML()}</div>
+            </div>
           </div>
         </div>
-        ${ch.boost_entity
-          ? html`<button
-              class=${`mini-btn ${boost ? "on" : ""}`}
-              @click=${() => this._toggleBoost(ch.boost_entity)}
-              title="Boost questa colonnina"
-            >
-              <ha-icon icon="mdi:rocket-launch-outline"></ha-icon>
-              Boost
-            </button>`
-          : nothing}
-      </div>
+        ${this._footerHTML()}
+      </ha-card>
     `;
+
+    this._mounted = true;
+    this._bindActions();
+    this._observeResize();
+    this._update();
   }
 
-  // ---------- SVG ----------
-  _renderSvg(flows) {
-    const nodes = {
-      pv: { x: 50, y: 15 },
-      grid: { x: 15, y: 50 },
-      battery: { x: 85, y: 50 },
-      house: { x: 35, y: 85 },
-      ev: { x: 70, y: 85 },
-    };
-
-    const maxFlow = Math.max(
-      1,
-      flows.pvHouse,
-      flows.pvBattery,
-      flows.pvEv,
-      flows.pvGrid,
-      flows.gridHouse,
-      flows.batteryHouse,
-      flows.batteryEv
-    );
-
-    const edge = (from, to, active, rev = false) => {
-      const a = nodes[from];
-      const b = nodes[to];
-      const thick = 1 + 5 * (active / maxFlow);
-      const opacity = active > 0 ? 0.9 : 0.15;
-      const dur = active > 0 ? Math.max(1.2, 4 - (active / maxFlow) * 3) : 0;
-      return svg`
-        <path
-          id=${`p-${from}-${to}`}
-          d="M ${a.x} ${a.y} Q ${(a.x + b.x) / 2} ${(a.y + b.y) / 2 + 5} ${b.x} ${b.y}"
-          fill="none"
-          stroke="url(#grad-${from})"
-          stroke-width=${thick}
-          opacity=${opacity}
-          stroke-linecap="round"
-        />
-        ${
-          dur > 0
-            ? svg`
-          <circle r="1.1" fill="white" opacity="0.95">
-            <animateMotion dur=${`${dur}s`} repeatCount="indefinite" keyPoints=${rev ? "1;0" : "0;1"} keyTimes="0;1">
-              <mpath href=${`#p-${from}-${to}`} />
-            </animateMotion>
-          </circle>
-        `
-            : nothing
-        }
-      `;
-    };
-
-    return svg`
-      <svg class="flow" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <defs>
-          <linearGradient id="grad-pv" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0" stop-color="#f2b900" />
-            <stop offset="1" stop-color="#ffd85c" />
-          </linearGradient>
-          <linearGradient id="grad-grid" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0" stop-color="#888" />
-            <stop offset="1" stop-color="#bbb" />
-          </linearGradient>
-          <linearGradient id="grad-battery" x1="0" x2="1" y1="0" y2="1">
-            <stop offset="0" stop-color="#28c76f" />
-            <stop offset="1" stop-color="#6be6a3" />
-          </linearGradient>
-        </defs>
-
-        ${edge("pv", "house", flows.pvHouse)}
-        ${edge("pv", "battery", flows.pvBattery)}
-        ${edge("pv", "ev", flows.pvEv)}
-        ${edge("pv", "grid", flows.pvGrid, true)}
-        ${edge("grid", "house", flows.gridHouse)}
-        ${edge("battery", "house", flows.batteryHouse, true)}
-        ${edge("battery", "ev", flows.batteryEv, true)}
-      </svg>
-    `;
-  }
-
-  _renderBalloon(key, icon, label, value, kind, soc = null, hint = null) {
-    const gridArea = {
-      pv: "pv",
-      grid: "grid",
-      battery: "battery",
-      house: "house",
-      ev: "ev",
-    }[key];
-
-    const val =
-      key === "battery" && soc !== null
-        ? html`<div class="sub">${pct(soc)}</div>`
-        : nothing;
-
-    const hintEl =
-      hint !== null && hint !== undefined
-        ? html`<div class="hint" title="Potenza consigliata">→ ${fmtW(hint)}</div>`
-        : nothing;
-
-    return html`
-      <div class=${`balloon ${kind}`} style=${`grid-area:${gridArea}`}>
-        <div class="bubble">
-          <ha-icon icon=${icon}></ha-icon>
+  _nodeHTML(kind, label, iconPath, opts = {}) {
+    const { large = false, bidirectional = false, dataKey = kind } = opts;
+    return `
+      <div class="node ${kind} ${large ? "large" : ""}"
+           data-kind="${kind}" data-key="${dataKey}">
+        <div class="circle">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="${iconPath}"/>
+          </svg>
+          <div class="value"></div>
+          ${bidirectional ? '<div class="flow"></div>' : ""}
         </div>
         <div class="label">${label}</div>
-        <div class="value">${fmtW(value)}</div>
-        ${val} ${hintEl}
       </div>
     `;
   }
 
-  _modeIcon(mode) {
-    switch (mode) {
-      case "eco":
-        return "mdi:leaf";
-      case "boost_car":
-        return "mdi:car-electric";
-      case "boost_battery":
-        return "mdi:home-battery";
-      case "fast":
-        return "mdi:flash";
-      case "off":
-        return "mdi:power";
-      default:
-        return "mdi:scale-balance";
+  _batteriesHTML() {
+    const list = this._resolveBatteries();
+    if (!list.length) {
+      // Fallback: single legacy battery from config
+      return this._nodeHTML("battery", "Battery", ICONS.battery, {
+        bidirectional: true,
+        dataKey: "battery:_main",
+      });
+    }
+    return list
+      .map((b, i) =>
+        this._nodeHTML("battery", b.name || `Battery ${i + 1}`, ICONS.battery, {
+          bidirectional: true,
+          dataKey: `battery:${b.id ?? i}`,
+        })
+      )
+      .join("");
+  }
+
+  _chargersHTML() {
+    const chargers = this._config.chargers || [];
+    if (!chargers.length) {
+      // Legacy single-charger support if ev_entity present
+      if (this._config.ev_entity || this._config.ev_recommended_entity) {
+        return this._nodeHTML("charger", "Wallbox", ICONS.charger, {
+          dataKey: "charger:_main",
+        });
+      }
+      return "";
+    }
+    return chargers
+      .map((ch, i) =>
+        this._nodeHTML("charger", ch.name || `EV ${i + 1}`, ICONS.charger, {
+          dataKey: `charger:${i}`,
+        })
+      )
+      .join("");
+  }
+
+  _footerHTML() {
+    const c = this._config;
+    const hasControls =
+      c.mode_entity || c.boost_battery_entity || (c.chargers || []).some((x) => x.boost_entity);
+    if (!hasControls) return "";
+
+    const modes = ["off", "balanced", "fast", "boost_car", "boost_battery"];
+    const modeButtons = c.mode_entity
+      ? `<div class="modes">
+           ${modes
+             .map(
+               (m) =>
+                 `<button class="chip" data-action="mode" data-value="${m}">${m.replace(
+                   "_",
+                   " "
+                 )}</button>`
+             )
+             .join("")}
+         </div>`
+      : "";
+
+    const boostButtons = `
+      <div class="boosts">
+        ${c.boost_battery_entity ? `<button class="chip boost bat" data-action="boost-battery">Boost battery</button>` : ""}
+        ${(c.chargers || [])
+          .filter((ch) => ch.boost_entity)
+          .map(
+            (ch, i) =>
+              `<button class="chip boost ev" data-action="boost-charger" data-idx="${i}">Boost ${
+                ch.name || `EV ${i + 1}`
+              }</button>`
+          )
+          .join("")}
+      </div>`;
+
+    return `<div class="footer">${modeButtons}${boostButtons}</div>`;
+  }
+
+  // ------------------------------------------------------------------
+  // State → DOM updates (cheap; runs every hass tick)
+  // ------------------------------------------------------------------
+  _update() {
+    if (!this._mounted || !this._hass) return;
+    const c = this._config;
+
+    const pv = Math.max(0, stateNum(this._hass, c.pv_entity));
+    const grid = stateNum(this._hass, c.grid_entity);
+    const house = Math.max(0, stateNum(this._hass, c.house_entity));
+    const soc = stateNum(this._hass, c.battery_soc_entity);
+
+    this._setNode("solar", { value: fmtPower(pv), active: pv > 10 });
+
+    const gridArrow = grid > 5 ? "←" : grid < -5 ? "→" : "·";
+    this._setNode("grid", {
+      value: `${gridArrow} ${fmtPower(Math.abs(grid))}`,
+      active: Math.abs(grid) > 5,
+      subClass: grid < -5 ? "export" : grid > 5 ? "import" : "",
+    });
+
+    this._setNode("home", { value: fmtPower(house), active: house > 10 });
+
+    // Batteries
+    const batteries = this._resolveBatteries();
+    if (!batteries.length) {
+      const bPw = stateNum(this._hass, c.battery_entity);
+      const arrow = bPw > 5 ? "↓" : bPw < -5 ? "↑" : "·";
+      this._setNode("battery:_main", {
+        value: `${arrow} ${fmtPower(Math.abs(bPw))}`,
+        active: Math.abs(bPw) > 5,
+        subClass: bPw > 5 ? "charging" : bPw < -5 ? "discharging" : "",
+        extra: c.battery_soc_entity ? fmtPercent(soc) : "",
+      });
+    } else {
+      batteries.forEach((b) => {
+        const bPw = stateNum(this._hass, b.power_entity);
+        const bSoc = b.soc_entity ? stateNum(this._hass, b.soc_entity) : null;
+        const arrow = bPw > 5 ? "↓" : bPw < -5 ? "↑" : "·";
+        this._setNode(`battery:${b.id}`, {
+          value: `${arrow} ${fmtPower(Math.abs(bPw))}`,
+          active: Math.abs(bPw) > 5,
+          subClass: bPw > 5 ? "charging" : bPw < -5 ? "discharging" : "",
+          extra: bSoc !== null ? fmtPercent(bSoc) : "",
+        });
+      });
+    }
+
+    // Chargers
+    const chargers = c.chargers || [];
+    if (!chargers.length && (c.ev_entity || c.ev_recommended_entity)) {
+      const p = stateNum(this._hass, c.ev_entity);
+      const rec = stateNum(this._hass, c.ev_recommended_entity);
+      this._setNode("charger:_main", {
+        value: fmtPower(p),
+        active: p > 50 || rec > 50,
+        extra: rec > 0 ? `→ ${fmtPower(rec)}` : "",
+      });
+    } else {
+      chargers.forEach((ch, i) => {
+        const p = stateNum(this._hass, ch.power_entity);
+        const rec = stateNum(this._hass, ch.recommended_power_entity);
+        const charging = stateStr(this._hass, ch.charging_entity) === "on" || p > 50;
+        const boost = stateStr(this._hass, ch.boost_entity) === "on";
+        this._setNode(`charger:${i}`, {
+          value: fmtPower(p),
+          active: charging || rec > 50,
+          subClass: boost ? "boost" : "",
+          extra: rec > 0 ? `→ ${fmtPower(rec)}` : "",
+        });
+      });
+    }
+
+    // Footer state (selected mode, boost active)
+    if (c.mode_entity) {
+      const m = stateStr(this._hass, c.mode_entity);
+      this.shadowRoot.querySelectorAll(".modes .chip").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.value === m);
+      });
+    }
+    if (c.boost_battery_entity) {
+      const on = stateStr(this._hass, c.boost_battery_entity) === "on";
+      const btn = this.shadowRoot.querySelector('[data-action="boost-battery"]');
+      if (btn) btn.classList.toggle("active", on);
+    }
+    (c.chargers || []).forEach((ch, i) => {
+      if (!ch.boost_entity) return;
+      const on = stateStr(this._hass, ch.boost_entity) === "on";
+      const btn = this.shadowRoot.querySelector(
+        `[data-action="boost-charger"][data-idx="${i}"]`
+      );
+      if (btn) btn.classList.toggle("active", on);
+    });
+
+    // Derive flow directions and redraw wires
+    this._flowState = this._computeFlowState({ pv, grid, house, batteries, chargers });
+    this._drawConnections();
+  }
+
+  _setNode(dataKey, { value, active, subClass = "", extra = "" }) {
+    const el = this.shadowRoot.querySelector(`.node[data-key="${CSS.escape(dataKey)}"]`);
+    if (!el) return;
+    el.classList.toggle("active", !!active);
+    el.classList.remove("charging", "discharging", "import", "export", "boost");
+    if (subClass) el.classList.add(subClass);
+    const v = el.querySelector(".value");
+    if (v) v.textContent = value;
+    const fl = el.querySelector(".flow");
+    if (fl) fl.textContent = extra;
+    else if (extra) {
+      // Append a small subscript for SOC/recommended
+      let s = el.querySelector(".sub");
+      if (!s) {
+        s = document.createElement("div");
+        s.className = "sub";
+        el.querySelector(".circle").appendChild(s);
+      }
+      s.textContent = extra;
     }
   }
 
-  async _toggleBoost(entityId) {
-    if (!entityId) return;
-    const domain = entityId.split(".")[0];
-    const state = stateStr(this.hass, entityId);
-    const service = state === "on" ? "turn_off" : "turn_on";
-    await this.hass.callService(domain, service, { entity_id: entityId });
+  _resolveBatteries() {
+    const cfg = this._config.batteries;
+    if (Array.isArray(cfg) && cfg.length) {
+      return cfg.map((b, i) => ({
+        id: b.id ?? i,
+        name: b.name,
+        power_entity: b.power_entity,
+        soc_entity: b.soc_entity,
+      }));
+    }
+    return [];
   }
 
-  async _callService(domain, service, data) {
-    await this.hass.callService(domain, service, data);
+  _computeFlowState({ pv, grid, house, batteries, chargers }) {
+    // Each returned entry says whether a given connection is flowing and
+    // in which direction (1 = source→home, -1 = home→source).
+    const flows = {};
+    flows.solar = pv > 10 ? 1 : 0;
+    flows.grid = grid > 5 ? 1 : grid < -5 ? -1 : 0;
+
+    if (!batteries.length) {
+      const bPw = stateNum(this._hass, this._config.battery_entity);
+      flows["battery:_main"] = bPw > 5 ? -1 : bPw < -5 ? 1 : 0;
+    } else {
+      batteries.forEach((b) => {
+        const bPw = stateNum(this._hass, b.power_entity);
+        flows[`battery:${b.id}`] = bPw > 5 ? -1 : bPw < -5 ? 1 : 0;
+      });
+    }
+
+    chargers.forEach((ch, i) => {
+      const p = stateNum(this._hass, ch.power_entity);
+      flows[`charger:${i}`] = p > 50 ? -1 : 0;
+    });
+    if (!chargers.length && this._config.ev_entity) {
+      const p = stateNum(this._hass, this._config.ev_entity);
+      flows["charger:_main"] = p > 50 ? -1 : 0;
+    }
+    return flows;
   }
 
-  // ---------- Styles ----------
-  static styles = css`
-    :host {
-      --sc-bg: var(--card-background-color, #14161a);
-      --sc-fg: var(--primary-text-color, #eaeaea);
-      --sc-fg-dim: var(--secondary-text-color, #9ba0a6);
-      --sc-accent: #1f6feb;
-      --sc-sun: #ffbe0b;
-      --sc-battery: #28c76f;
-      --sc-grid: #a0a4ab;
-      --sc-house: #5ac8fa;
-      --sc-ev: #ef476f;
-    }
+  // ------------------------------------------------------------------
+  // SVG wires
+  // ------------------------------------------------------------------
+  _drawConnections() {
+    const svg = this.shadowRoot.querySelector(".wires");
+    const home = this.shadowRoot.querySelector('.node[data-kind="home"]');
+    if (!svg || !home) return;
+    const stage = this.shadowRoot.querySelector(".stage");
+    if (!stage) return;
 
-    ha-card {
-      padding: 16px 20px 20px;
-      background: radial-gradient(ellipse at top, rgba(31, 111, 235, 0.15), transparent 55%),
-        var(--sc-bg);
-      overflow: hidden;
-      color: var(--sc-fg);
-    }
+    const rect = stage.getBoundingClientRect();
+    svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+    svg.setAttribute("width", rect.width);
+    svg.setAttribute("height", rect.height);
 
-    .header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 8px;
-    }
-    .title {
-      font-size: 1.15rem;
-      font-weight: 600;
-      letter-spacing: 0.2px;
-    }
-    .mode-pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 4px 10px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.06);
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      font-size: 0.8rem;
-      color: var(--sc-fg-dim);
-      text-transform: capitalize;
-    }
-    .mode-pill ha-icon {
-      --mdc-icon-size: 16px;
-      color: var(--sc-accent);
-    }
+    const center = (el) => {
+      const r = el.getBoundingClientRect();
+      return {
+        x: r.left - rect.left + r.width / 2,
+        y: r.top - rect.top + r.height / 2,
+      };
+    };
+    const homeC = center(home);
 
-    .stage {
-      position: relative;
-      display: grid;
-      grid-template-areas:
-        ".    pv   ."
-        "grid  .  battery"
-        "house .   ev";
-      grid-template-columns: 1fr 1fr 1fr;
-      grid-template-rows: 1fr 1fr 1fr;
-      aspect-ratio: 5 / 3;
-      min-height: 280px;
-    }
+    // Compute the port on the edge of the home circle closest to the source
+    const radius = home.querySelector(".circle").getBoundingClientRect().width / 2;
 
-    svg.flow {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      z-index: 0;
-      pointer-events: none;
-    }
+    const edgePoint = (from, to, r) => {
+      const dx = to.x - from.x;
+      const dy = to.y - from.y;
+      const len = Math.hypot(dx, dy) || 1;
+      return { x: to.x - (dx / len) * r, y: to.y - (dy / len) * r };
+    };
 
-    .balloon {
-      position: relative;
-      z-index: 1;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      gap: 2px;
-      text-align: center;
-    }
-    .bubble {
-      width: 64px;
-      height: 64px;
-      border-radius: 50%;
-      display: grid;
-      place-items: center;
-      background: linear-gradient(145deg, rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.25));
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.15);
-      transition: transform 0.25s ease, box-shadow 0.25s ease;
-    }
-    .balloon:hover .bubble {
-      transform: translateY(-2px) scale(1.04);
-    }
-    .bubble ha-icon {
-      --mdc-icon-size: 30px;
-      filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
-    }
-    .balloon.sun .bubble {
-      box-shadow: 0 0 28px rgba(255, 190, 11, 0.35), 0 6px 20px rgba(0, 0, 0, 0.45);
-    }
-    .balloon.sun ha-icon { color: var(--sc-sun); }
-    .balloon.battery ha-icon { color: var(--sc-battery); }
-    .balloon.grid ha-icon { color: var(--sc-grid); }
-    .balloon.export ha-icon { color: #7ed957; }
-    .balloon.house ha-icon { color: var(--sc-house); }
-    .balloon.ev ha-icon { color: var(--sc-ev); }
+    const wires = [];
+    const sources = this.shadowRoot.querySelectorAll(".node:not([data-kind='home'])");
+    sources.forEach((node) => {
+      const key = node.dataset.key;
+      const kind = node.dataset.kind;
+      const srcC = center(node);
+      const srcR = node.querySelector(".circle").getBoundingClientRect().width / 2;
+      const srcEdge = edgePoint(homeC, srcC, srcR);
+      const homeEdge = edgePoint(srcC, homeC, radius);
 
-    .label {
-      font-size: 0.75rem;
-      color: var(--sc-fg-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.8px;
-      margin-top: 4px;
-    }
-    .value {
-      font-size: 0.95rem;
-      font-weight: 600;
-    }
-    .sub {
-      font-size: 0.75rem;
-      color: var(--sc-fg-dim);
-    }
-    .hint {
-      font-size: 0.7rem;
-      color: var(--sc-accent);
-      margin-top: 2px;
-    }
+      const d = curvePath(srcEdge.x, srcEdge.y, homeEdge.x, homeEdge.y);
+      const color = NODE_COLORS[kind] || NODE_COLORS.muted;
+      const flow = this._flowState?.[key] || 0;
+      const active = flow !== 0;
 
-    /* --- multi-charger tiles --- */
-    .chargers {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-      gap: 10px;
-      margin-top: 14px;
-    }
-    .tile {
-      position: relative;
-      padding: 10px 12px;
-      border-radius: 12px;
-      background: linear-gradient(145deg, rgba(255, 255, 255, 0.04), rgba(0, 0, 0, 0.15));
-      border: 1px solid rgba(255, 255, 255, 0.08);
-      transition: border-color 0.2s ease, box-shadow 0.2s ease;
-    }
-    .tile.charging {
-      border-color: rgba(239, 71, 111, 0.6);
-      box-shadow: 0 0 18px rgba(239, 71, 111, 0.25);
-    }
-    .tile-head {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 0.8rem;
-      color: var(--sc-fg-dim);
-    }
-    .tile-head ha-icon {
-      --mdc-icon-size: 16px;
-      color: var(--sc-ev);
-    }
-    .tile-name {
-      font-weight: 600;
-      color: var(--sc-fg);
-      flex: 1;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .boost-pill {
-      color: var(--sc-accent);
-      --mdc-icon-size: 14px;
-    }
-    .tile-main {
-      margin-top: 4px;
-    }
-    .tile-power {
-      font-size: 1.1rem;
-      font-weight: 700;
-    }
-    .tile-sub {
-      font-size: 0.75rem;
-      color: var(--sc-fg-dim);
-      margin-top: 2px;
-    }
-    .mini-btn {
-      margin-top: 8px;
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      padding: 4px 10px;
-      font-size: 0.75rem;
-      border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(255, 255, 255, 0.03);
-      color: var(--sc-fg);
-      cursor: pointer;
-    }
-    .mini-btn ha-icon { --mdc-icon-size: 14px; }
-    .mini-btn.on {
-      background: linear-gradient(135deg, #ef476f, #ff6b9a);
-      border-color: transparent;
-      color: #fff;
-    }
+      wires.push({ key, d, color, flow, active, kind });
+    });
 
-    .controls {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 14px;
-      justify-content: center;
+    // Build SVG content in one shot
+    const ns = "http://www.w3.org/2000/svg";
+    svg.replaceChildren();
+
+    // Static background paths (always visible, muted)
+    wires.forEach((w) => {
+      const base = document.createElementNS(ns, "path");
+      base.setAttribute("d", w.d);
+      base.setAttribute("fill", "none");
+      base.setAttribute("stroke", w.color);
+      base.setAttribute("stroke-width", w.active ? "2.5" : "1.25");
+      base.setAttribute("stroke-linecap", "round");
+      base.setAttribute("opacity", w.active ? "0.85" : "0.22");
+      base.setAttribute("id", `wire-${w.key.replace(/[^\w-]/g, "_")}`);
+      svg.appendChild(base);
+    });
+
+    // Animated flow particles on active wires
+    wires.forEach((w) => {
+      if (!w.active) return;
+      const circle = document.createElementNS(ns, "circle");
+      circle.setAttribute("r", "4");
+      circle.setAttribute("fill", w.color);
+      circle.setAttribute("filter", "url(#glow)");
+      const motion = document.createElementNS(ns, "animateMotion");
+      motion.setAttribute("dur", "2.2s");
+      motion.setAttribute("repeatCount", "indefinite");
+      motion.setAttribute("rotate", "auto");
+      if (w.flow < 0) {
+        // Reverse direction: home → source
+        motion.setAttribute("keyPoints", "1;0");
+        motion.setAttribute("keyTimes", "0;1");
+        motion.setAttribute("calcMode", "linear");
+      }
+      const mpath = document.createElementNS(ns, "mpath");
+      mpath.setAttributeNS(
+        "http://www.w3.org/1999/xlink",
+        "href",
+        `#wire-${w.key.replace(/[^\w-]/g, "_")}`
+      );
+      motion.appendChild(mpath);
+      circle.appendChild(motion);
+      svg.appendChild(circle);
+    });
+
+    // SVG filter for glow (added once)
+    const defs = document.createElementNS(ns, "defs");
+    defs.innerHTML = `
+      <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+        <feGaussianBlur stdDeviation="2.5" result="blur"/>
+        <feMerge>
+          <feMergeNode in="blur"/>
+          <feMergeNode in="SourceGraphic"/>
+        </feMerge>
+      </filter>`;
+    svg.appendChild(defs);
+  }
+
+  _observeResize() {
+    if (this._resizeObserver) this._resizeObserver.disconnect();
+    const stage = this.shadowRoot.querySelector(".stage");
+    if (!stage) return;
+    this._resizeObserver = new ResizeObserver(() => this._drawConnections());
+    this._resizeObserver.observe(stage);
+    window.addEventListener("resize", this._onResize);
+    // Defer once to let layout settle
+    requestAnimationFrame(() => this._drawConnections());
+  }
+
+  // ------------------------------------------------------------------
+  // Actions
+  // ------------------------------------------------------------------
+  _bindActions() {
+    this.shadowRoot.querySelectorAll("[data-action]").forEach((btn) => {
+      btn.addEventListener("click", (ev) => this._onAction(ev));
+    });
+  }
+
+  async _onAction(ev) {
+    if (!this._hass) return;
+    const btn = ev.currentTarget;
+    const action = btn.dataset.action;
+    const c = this._config;
+    try {
+      if (action === "mode" && c.mode_entity) {
+        await this._hass.callService("select", "select_option", {
+          entity_id: c.mode_entity,
+          option: btn.dataset.value,
+        });
+      } else if (action === "boost-battery" && c.boost_battery_entity) {
+        await this._hass.callService("switch", "toggle", {
+          entity_id: c.boost_battery_entity,
+        });
+      } else if (action === "boost-charger") {
+        const i = Number(btn.dataset.idx);
+        const ch = (c.chargers || [])[i];
+        if (ch?.boost_entity) {
+          await this._hass.callService("switch", "toggle", {
+            entity_id: ch.boost_entity,
+          });
+        }
+      }
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("solar-charge-card action failed", err);
     }
-    .boost {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 8px 14px;
-      border-radius: 999px;
-      border: 1px solid rgba(255, 255, 255, 0.12);
-      background: rgba(255, 255, 255, 0.04);
-      color: var(--sc-fg);
-      cursor: pointer;
-      font-size: 0.85rem;
-      transition: all 0.2s ease;
-    }
-    .boost ha-icon { --mdc-icon-size: 18px; }
-    .boost:hover { background: rgba(255, 255, 255, 0.08); }
-    .boost.active { border-color: transparent; color: #fff; }
-    .boost.active.battery {
-      background: linear-gradient(135deg, #28c76f, #6be6a3);
-      box-shadow: 0 4px 16px rgba(40, 199, 111, 0.4);
-    }
-    .boost.reset { opacity: 0.85; }
-  `;
+  }
+
+  // ------------------------------------------------------------------
+  _styles() {
+    return `
+      :host { display: block; }
+      ha-card {
+        padding: 12px 14px 14px;
+        background:
+          radial-gradient(ellipse at top, rgba(120,140,180,0.08), transparent 70%),
+          var(--ha-card-background, var(--card-background-color, #1c1f24));
+        color: var(--primary-text-color, #e8e8e8);
+        overflow: hidden;
+      }
+      .title {
+        font-size: 1rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        opacity: 0.9;
+        margin-bottom: 10px;
+        padding-left: 4px;
+      }
+      .stage {
+        position: relative;
+        width: 100%;
+        aspect-ratio: 16 / 11;
+        min-height: 320px;
+      }
+      .wires {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+      }
+      .nodes {
+        position: relative;
+        width: 100%;
+        height: 100%;
+        display: grid;
+        grid-template-rows: 1fr 1.35fr 1fr;
+        gap: 0;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 0 4px;
+      }
+      .row.top { justify-content: center; }
+      .row.middle { align-items: center; }
+      .row.bottom { align-items: flex-end; }
+      .spacer { flex: 1; }
+      .group {
+        display: flex;
+        gap: 14px;
+        align-items: flex-end;
+        flex-wrap: wrap;
+      }
+      .group.batteries { justify-content: flex-start; flex: 1; }
+      .group.chargers { justify-content: flex-end; flex: 1; }
+
+      .node {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        opacity: 0.55;
+        transition: opacity 260ms ease, transform 260ms ease;
+      }
+      .node.active { opacity: 1; }
+      .circle {
+        position: relative;
+        width: 92px;
+        height: 92px;
+        border-radius: 50%;
+        border: 2.5px solid var(--node-color, #555);
+        background:
+          radial-gradient(circle at 50% 30%, rgba(255,255,255,0.06), transparent 70%),
+          rgba(0,0,0,0.25);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        backdrop-filter: blur(2px);
+        box-shadow: 0 0 0 0 var(--node-color);
+        transition: box-shadow 260ms ease;
+      }
+      .node.active .circle {
+        box-shadow: 0 0 22px -4px var(--node-color);
+      }
+      .node.large .circle { width: 116px; height: 116px; }
+      .icon {
+        width: 26px;
+        height: 26px;
+        fill: var(--node-color);
+        filter: drop-shadow(0 0 4px rgba(0,0,0,0.4));
+      }
+      .node.large .icon { width: 32px; height: 32px; }
+      .value {
+        margin-top: 4px;
+        font-size: 0.82rem;
+        font-weight: 600;
+        letter-spacing: 0.01em;
+        color: var(--node-color);
+        text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+        white-space: nowrap;
+      }
+      .node.large .value { font-size: 0.95rem; }
+      .sub {
+        position: absolute;
+        top: 6px;
+        left: 50%;
+        transform: translateX(-50%);
+        font-size: 0.7rem;
+        opacity: 0.75;
+        color: var(--node-color);
+      }
+      .label {
+        font-size: 0.78rem;
+        opacity: 0.75;
+        letter-spacing: 0.02em;
+      }
+
+      .node.solar  { --node-color: ${NODE_COLORS.solar}; }
+      .node.grid   { --node-color: ${NODE_COLORS.grid}; }
+      .node.battery{ --node-color: ${NODE_COLORS.battery}; }
+      .node.home   { --node-color: ${NODE_COLORS.home}; }
+      .node.charger{ --node-color: ${NODE_COLORS.charger}; }
+
+      .footer {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,255,255,0.06);
+      }
+      .modes, .boosts {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+      }
+      .chip {
+        font-family: inherit;
+        font-size: 0.75rem;
+        color: var(--primary-text-color, #ddd);
+        background: rgba(255,255,255,0.05);
+        border: 1px solid rgba(255,255,255,0.12);
+        border-radius: 999px;
+        padding: 5px 12px;
+        cursor: pointer;
+        text-transform: capitalize;
+        transition: background 180ms ease, border-color 180ms ease;
+      }
+      .chip:hover { background: rgba(255,255,255,0.1); }
+      .chip.active {
+        background: rgba(102,187,106,0.18);
+        border-color: ${NODE_COLORS.home};
+        color: #e6ffe9;
+      }
+      .chip.boost.bat.active {
+        background: rgba(236,64,122,0.2);
+        border-color: ${NODE_COLORS.battery};
+        color: #ffe5ee;
+      }
+      .chip.boost.ev.active {
+        background: rgba(38,198,218,0.2);
+        border-color: ${NODE_COLORS.charger};
+        color: #dffaff;
+      }
+
+      @media (max-width: 520px) {
+        .circle { width: 76px; height: 76px; }
+        .node.large .circle { width: 96px; height: 96px; }
+        .icon { width: 22px; height: 22px; }
+        .node.large .icon { width: 28px; height: 28px; }
+        .value { font-size: 0.72rem; }
+        .node.large .value { font-size: 0.85rem; }
+      }
+    `;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Editor (visual editor)
+// Visual editor (simple HTML form — no Lit dependency either)
 // ---------------------------------------------------------------------------
-class SolarChargeCardEditor extends LitElement {
-  static properties = {
-    hass: { attribute: false },
-    _config: { state: true },
-  };
+class SolarChargeCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = {};
+  }
 
   setConfig(config) {
-    this._config = config;
+    this._config = { ...config };
+    this._render();
   }
 
-  _schema() {
-    return [
-      { name: "title", selector: { text: {} } },
-      { name: "pv_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "house_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "grid_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "battery_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "battery_soc_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "ev_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "ev_recommended_entity", selector: { entity: { domain: "sensor" } } },
-      { name: "mode_entity", selector: { entity: { domain: "select" } } },
-      { name: "boost_battery_entity", selector: { entity: { domain: "switch" } } },
+  set hass(hass) {
+    this._hass = hass;
+  }
+
+  _render() {
+    const fields = [
+      ["title", "Title"],
+      ["pv_entity", "PV power entity"],
+      ["house_entity", "House power entity"],
+      ["grid_entity", "Grid power entity"],
+      ["battery_entity", "Battery power entity (single-battery fallback)"],
+      ["battery_soc_entity", "Battery SOC entity"],
+      ["ev_recommended_entity", "EV recommended power total (legacy)"],
+      ["mode_entity", "Mode select entity"],
+      ["boost_battery_entity", "Boost battery switch"],
     ];
-  }
-
-  _labels = {
-    title: "Titolo",
-    pv_entity: "Potenza fotovoltaica",
-    house_entity: "Consumo casa",
-    grid_entity: "Scambio rete",
-    battery_entity: "Potenza batteria",
-    battery_soc_entity: "SOC batteria",
-    ev_entity: "Potenza EV totale",
-    ev_recommended_entity: "Potenza EV consigliata totale",
-    mode_entity: "Modalità (select)",
-    boost_battery_entity: "Boost batteria (switch)",
-  };
-
-  render() {
-    if (!this.hass || !this._config) return html``;
-    const main = Object.fromEntries(
-      Object.entries(this._config).filter(([k]) => k !== "chargers")
-    );
-    return html`
-      <ha-form
-        .hass=${this.hass}
-        .data=${main}
-        .schema=${this._schema()}
-        .computeLabel=${(s) => this._labels[s.name] ?? s.name}
-        @value-changed=${this._valueChanged}
-      ></ha-form>
-      <div class="note">
-        La lista <code>chargers:</code> (una entry per wallbox) va scritta in YAML.
-        Esempio:<br />
-        <pre>
+    this.shadowRoot.innerHTML = `
+      <style>
+        .editor { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
+        label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 4px; }
+        input { padding: 6px 8px; font-size: 0.9rem;
+                background: var(--secondary-background-color, #2a2a2a);
+                color: var(--primary-text-color, #eee);
+                border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 6px; }
+        .hint { font-size: 0.75rem; opacity: 0.65; }
+        pre { background: rgba(0,0,0,0.25); padding: 8px; border-radius: 6px;
+              font-size: 0.75rem; white-space: pre-wrap; }
+      </style>
+      <div class="editor">
+        ${fields
+          .map(
+            ([k, lbl]) => `
+          <label>
+            <span>${lbl}</span>
+            <input data-key="${k}" value="${this._config[k] ?? ""}" />
+          </label>`
+          )
+          .join("")}
+        <div class="hint">
+          Lists (<code>chargers</code>, <code>batteries</code>) must be edited in YAML.
+          Example:
+          <pre>
 chargers:
   - name: Garage
     power_entity: sensor.solar_charge_garage_power
     recommended_power_entity: sensor.solar_charge_garage_recommended_power
-    recommended_current_entity: sensor.solar_charge_garage_recommended_current
     charging_entity: binary_sensor.solar_charge_garage_charging
-    boost_entity: switch.solar_charge_garage_boost</pre>
+    boost_entity: switch.solar_charge_garage_boost
+batteries:
+  - id: main
+    name: Main
+    power_entity: sensor.solar_charge_main_power
+    soc_entity: sensor.solar_charge_main_soc</pre>
+        </div>
       </div>
     `;
+    this.shadowRoot.querySelectorAll("input[data-key]").forEach((inp) => {
+      inp.addEventListener("change", (ev) => {
+        const key = ev.target.dataset.key;
+        const value = ev.target.value;
+        const next = { ...this._config };
+        if (value === "") delete next[key];
+        else next[key] = value;
+        this._config = next;
+        this.dispatchEvent(
+          new CustomEvent("config-changed", { detail: { config: next } })
+        );
+      });
+    });
   }
-
-  _valueChanged(ev) {
-    const newMain = ev.detail.value;
-    this._config = { ...this._config, ...newMain };
-    this.dispatchEvent(
-      new CustomEvent("config-changed", { detail: { config: this._config } })
-    );
-  }
-
-  static styles = css`
-    .note {
-      margin-top: 10px;
-      font-size: 0.8rem;
-      color: var(--secondary-text-color);
-    }
-    pre {
-      background: rgba(0, 0, 0, 0.2);
-      padding: 8px;
-      border-radius: 6px;
-      overflow-x: auto;
-    }
-  `;
 }
 
-// Defensive: the script may be loaded twice (once via add_extra_js_url,
-// once via a Lovelace resource entry). Without this guard
-// customElements.define would throw on the second run and nothing after
-// it (including the customCards registration) would execute.
+// ---------------------------------------------------------------------------
+// Safe registration (idempotent: script may load twice)
+// ---------------------------------------------------------------------------
 if (!customElements.get("solar-charge-card")) {
   customElements.define("solar-charge-card", SolarChargeCard);
 }
 if (!customElements.get("solar-charge-card-editor")) {
   customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
-}
-
-window.customCards = window.customCards || [];
-if (!window.customCards.some((c) => c.type === "solar-charge-card")) {
-  window.customCards.push({
-    type: "solar-charge-card",
-    name: "Solar Charge Card",
-    description:
-      "Tesla-like energy flow card for the Solar Charge Balancer integration. Supports multiple wallboxes.",
-    preview: true,
-    documentationURL: "https://github.com/cybercecco/solar-charge",
-  });
 }
