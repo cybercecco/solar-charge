@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.10.1";
+const CARD_VERSION = "0.10.2";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -486,30 +486,28 @@ class SolarChargeCard extends HTMLElement {
     });
     this._sim.nodes = next;
     this._sim.idleFrames = 0;
-    // Defer until the stage has real dimensions. In the card picker the
-    // tile can be 0x0 for several frames before being laid out, so we
-    // retry a handful of times instead of committing layout too early.
-    let retries = 0;
-    const attempt = () => {
-      const stage = this.shadowRoot.querySelector(".stage");
-      if (!stage) return;
-      const rect = stage.getBoundingClientRect();
-      if (rect.width < 10 || rect.height < 10) {
-        if (++retries < 30) requestAnimationFrame(attempt);
-        return;
-      }
-      this._recomputeRestPositions(false);
+    // Immediately place balloons at their rest positions (using a
+    // fallback size if the stage isn't laid out yet). A deferred rAF
+    // then re-runs once real dimensions exist; any later resize is
+    // handled by ResizeObserver in `_observeResize`.
+    this._recomputeRestPositions(false);
+    requestAnimationFrame(() => {
+      this._recomputeRestPositions(true);
       this._startSimLoop();
-    };
-    requestAnimationFrame(attempt);
+    });
   }
 
   _recomputeRestPositions(preservePos) {
     const stage = this.shadowRoot.querySelector(".stage");
     if (!stage) return;
     const rect = stage.getBoundingClientRect();
-    const W = rect.width, H = rect.height;
-    if (W < 10 || H < 10) return;
+    // Fall back to a sensible default when the stage has not been sized
+    // yet (e.g. the card-picker tile has not finished its first layout).
+    // Without this, every balloon would sit at (0,0) and `overflow:
+    // hidden` on the stage would clip them off-screen, making the tile
+    // look empty and unresponsive.
+    const W = rect.width >= 10 ? rect.width : 340;
+    const H = rect.height >= 10 ? rect.height : 260;
 
     const home = this._sim.nodes.get("home");
     if (home) {
@@ -614,8 +612,11 @@ class SolarChargeCard extends HTMLElement {
     const stage = this.shadowRoot.querySelector(".stage");
     if (!stage) return;
     const rect = stage.getBoundingClientRect();
-    const W = rect.width, H = rect.height;
-    if (W < 10 || H < 10) return;
+    // Same fallback story as `_recomputeRestPositions`: keep simulating
+    // with a reasonable default size rather than bailing, so the tile in
+    // the picker paints something meaningful immediately.
+    const W = rect.width >= 10 ? rect.width : 340;
+    const H = rect.height >= 10 ? rect.height : 260;
 
     const states = Array.from(this._sim.nodes.values());
 
