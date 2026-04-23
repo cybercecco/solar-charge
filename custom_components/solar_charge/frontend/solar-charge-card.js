@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.10.0";
+const CARD_VERSION = "0.10.1";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -486,11 +486,22 @@ class SolarChargeCard extends HTMLElement {
     });
     this._sim.nodes = next;
     this._sim.idleFrames = 0;
-    // Defer one frame so the stage has real dimensions.
-    requestAnimationFrame(() => {
+    // Defer until the stage has real dimensions. In the card picker the
+    // tile can be 0x0 for several frames before being laid out, so we
+    // retry a handful of times instead of committing layout too early.
+    let retries = 0;
+    const attempt = () => {
+      const stage = this.shadowRoot.querySelector(".stage");
+      if (!stage) return;
+      const rect = stage.getBoundingClientRect();
+      if (rect.width < 10 || rect.height < 10) {
+        if (++retries < 30) requestAnimationFrame(attempt);
+        return;
+      }
       this._recomputeRestPositions(false);
       this._startSimLoop();
-    });
+    };
+    requestAnimationFrame(attempt);
   }
 
   _recomputeRestPositions(preservePos) {
@@ -727,22 +738,47 @@ class SolarChargeCard extends HTMLElement {
   _onDragStart(ev, state, el) {
     // Only primary button / first touch
     if (ev.button !== undefined && ev.button !== 0) return;
-    ev.preventDefault();
-    try {
-      el.setPointerCapture(ev.pointerId);
-    } catch (_) {
-      /* ignore */
-    }
-    el.classList.add("dragging");
-    state.dragging = true;
-    state.vel.x = 0;
-    state.vel.y = 0;
+
+    // DO NOT preventDefault here: calling preventDefault on pointerdown
+    // would suppress the synthetic `click` event, which in turn would
+    // break Lovelace's card picker (the tile click that adds the card to
+    // the dashboard would never fire). Instead we arm a drag gesture and
+    // only commit to it — capturing the pointer and calling
+    // preventDefault — once the user has moved beyond a small threshold.
+    const THRESHOLD = 5;
     const stage = this.shadowRoot.querySelector(".stage");
-    const rect = stage.getBoundingClientRect();
-    const grabOffsetX = state.pos.x - (ev.clientX - rect.left);
-    const grabOffsetY = state.pos.y - (ev.clientY - rect.top);
+    if (!stage) return;
+    const rect0 = stage.getBoundingClientRect();
+    const startClientX = ev.clientX;
+    const startClientY = ev.clientY;
+    const grabOffsetX = state.pos.x - (ev.clientX - rect0.left);
+    const grabOffsetY = state.pos.y - (ev.clientY - rect0.top);
+
+    let dragStarted = false;
+    let captured = false;
+
+    const beginDrag = () => {
+      dragStarted = true;
+      try {
+        el.setPointerCapture(ev.pointerId);
+        captured = true;
+      } catch (_) {
+        /* ignore */
+      }
+      el.classList.add("dragging");
+      state.dragging = true;
+      state.vel.x = 0;
+      state.vel.y = 0;
+    };
 
     const onMove = (e) => {
+      if (!dragStarted) {
+        const dx = e.clientX - startClientX;
+        const dy = e.clientY - startClientY;
+        if (Math.hypot(dx, dy) < THRESHOLD) return;
+        beginDrag();
+      }
+      e.preventDefault();
       const r = stage.getBoundingClientRect();
       let x = e.clientX - r.left + grabOffsetX;
       let y = e.clientY - r.top + grabOffsetY;
@@ -751,23 +787,29 @@ class SolarChargeCard extends HTMLElement {
       state.pos.x = x;
       state.pos.y = y;
       this._positionNode(state);
-      this._startSimLoop(); // let others yield to the dragged node
+      this._startSimLoop();
     };
-    const onUp = () => {
-      state.dragging = false;
-      // Magnetic placement: the drop location becomes the new rest anchor
-      state.rest.x = state.pos.x;
-      state.rest.y = state.pos.y;
-      el.classList.remove("dragging");
-      try {
-        el.releasePointerCapture(ev.pointerId);
-      } catch (_) {
-        /* ignore */
-      }
+    const cleanup = () => {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
       el.removeEventListener("pointercancel", onUp);
-      this._startSimLoop();
+    };
+    const onUp = () => {
+      if (dragStarted) {
+        state.dragging = false;
+        state.rest.x = state.pos.x;
+        state.rest.y = state.pos.y;
+        el.classList.remove("dragging");
+        if (captured) {
+          try {
+            el.releasePointerCapture(ev.pointerId);
+          } catch (_) {
+            /* ignore */
+          }
+        }
+        this._startSimLoop();
+      }
+      cleanup();
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
