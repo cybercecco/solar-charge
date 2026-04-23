@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.10.2";
+const CARD_VERSION = "0.11.0";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -33,6 +33,16 @@ if (!window.customCards.some((c) => c.type === "solar-charge-card")) {
     name: "Solar Charge Card",
     description:
       "Tesla-like energy flow graph for the Solar Charge Balancer integration.",
+    preview: true,
+    documentationURL: "https://github.com/cybercecco/solar-charge",
+  });
+}
+if (!window.customCards.some((c) => c.type === "solar-charge-mode-card")) {
+  window.customCards.push({
+    type: "solar-charge-mode-card",
+    name: "Solar Charge Mode Selector",
+    description:
+      "Compact button strip to pick the Solar Charge operating mode (off/eco/balanced/boost_car/boost_battery/fast).",
     preview: true,
     documentationURL: "https://github.com/cybercecco/solar-charge",
   });
@@ -1532,6 +1542,304 @@ batteries:
 }
 
 // ---------------------------------------------------------------------------
+// Mode selector card — compact pill strip that drives the integration's
+// `select.solar_charge_balancing_mode` entity. Only the active mode lights
+// up; tapping any other one calls `select.select_option`. Icons are
+// inline SVG paths so there's no dependency on Material icons.
+// ---------------------------------------------------------------------------
+const MODE_BUTTONS = [
+  {
+    value: "off",
+    label: "Off",
+    color: "#9aa0a6",
+    // Power symbol
+    icon: "M13 3h-2v10h2V3zM6.76 5.51l-1.42 1.42A7 7 0 0 0 12 19a7 7 0 0 0 6.66-12.07l-1.42-1.42A5 5 0 1 1 7 7a5 5 0 0 1-.24-1.49z",
+  },
+  {
+    value: "eco",
+    label: "Eco",
+    color: "#66BB6A",
+    // Leaf
+    icon: "M17 3c-6 0-10 4-10 10 0 3 1 5 2 6l-2 2 1 1 2-2c1 1 3 2 6 2 6 0 10-4 10-10 0-5-4-9-9-9zm-1 4c-3 1-6 3-7 7-1-3 1-6 5-7h2z",
+  },
+  {
+    value: "balanced",
+    label: "Balanced",
+    color: "#42A5F5",
+    // Scales
+    icon: "M12 3a1 1 0 0 1 1 1v1h5a1 1 0 1 1 0 2h-1.1l2.6 6.2a3 3 0 0 1-5.8 1H13v7h4v2H7v-2h4v-7h-1.7a3 3 0 0 1-5.8-1L6.1 7H5a1 1 0 0 1 0-2h5V4a1 1 0 0 1 1-1zm5 5.4L15.3 13h3.4L17 8.4zM7 8.4L5.3 13h3.4L7 8.4z",
+  },
+  {
+    value: "boost_car",
+    label: "Boost Auto",
+    color: "#26C6DA",
+    // Car + bolt
+    icon: "M5 11l1.5-4.5a2 2 0 0 1 2-1.5h7a2 2 0 0 1 2 1.5L19 11h1a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-1v1a1 1 0 0 1-2 0v-1H7v1a1 1 0 0 1-2 0v-1H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1h1zm2 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm10 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM12.5 2l-3 5h2l-1 4 3-5h-2l1-4z",
+  },
+  {
+    value: "boost_battery",
+    label: "Boost Batteria",
+    color: "#EC407A",
+    // Battery + bolt
+    icon: "M9 4h6v2h2v16H7V6h2V4zm2 5l-2 5h2v4l3-5h-2l1-4h-2z",
+  },
+  {
+    value: "fast",
+    label: "Fast",
+    color: "#FFB300",
+    // Bolt / lightning
+    icon: "M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z",
+  },
+];
+
+class SolarChargeModeCard extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = null;
+    this._hass = null;
+    this._mounted = false;
+  }
+
+  static getConfigElement() {
+    return document.createElement("solar-charge-mode-card-editor");
+  }
+
+  static async getStubConfig(hass /* , entities, entitiesFallback */) {
+    const fallback = {
+      title: "Modalità di carica",
+      mode_entity: "select.solar_charge_balancing_mode",
+    };
+    try {
+      const registry = hass?.entities || {};
+      const hit = Object.values(registry).find(
+        (e) => e && e.platform === "solar_charge" && /_mode$/.test(e.unique_id || "")
+      );
+      if (hit?.entity_id) fallback.mode_entity = hit.entity_id;
+    } catch (_) {
+      /* ignore */
+    }
+    return fallback;
+  }
+
+  getCardSize() {
+    return 2;
+  }
+
+  setConfig(config) {
+    if (!config) throw new Error("Invalid configuration");
+    this._config = { ...config };
+    this._mounted = false;
+    if (this._hass) this._render();
+  }
+
+  set hass(hass) {
+    const first = !this._hass;
+    this._hass = hass;
+    if (!this._mounted) this._render();
+    else if (!first) this._update();
+  }
+
+  _visibleModes() {
+    const list = this._config?.modes;
+    if (Array.isArray(list) && list.length) {
+      return MODE_BUTTONS.filter((m) => list.includes(m.value));
+    }
+    return MODE_BUTTONS;
+  }
+
+  _render() {
+    if (!this._config) return;
+    const modes = this._visibleModes();
+    const title = this._config.title ?? "Modalità di carica";
+    this.shadowRoot.innerHTML = `
+      <style>${this._styles()}</style>
+      <ha-card>
+        ${title ? `<div class="title">${title}</div>` : ""}
+        <div class="strip">
+          ${modes
+            .map(
+              (m) => `
+            <button class="chip" data-value="${m.value}"
+              style="--chip-color: ${m.color}" aria-label="${m.label}">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${m.icon}"/></svg>
+              <span>${m.label}</span>
+            </button>`
+            )
+            .join("")}
+        </div>
+      </ha-card>
+    `;
+    this._mounted = true;
+    this.shadowRoot.querySelectorAll(".chip").forEach((btn) => {
+      btn.addEventListener("click", (ev) => this._onClick(ev));
+    });
+    this._update();
+  }
+
+  _update() {
+    if (!this._mounted || !this._hass) return;
+    const current = stateStr(this._hass, this._config.mode_entity);
+    this.shadowRoot.querySelectorAll(".chip").forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.value === current);
+    });
+  }
+
+  async _onClick(ev) {
+    const btn = ev.currentTarget;
+    const value = btn.dataset.value;
+    const entityId = this._config?.mode_entity;
+    if (!this._hass || !entityId || !value) return;
+    try {
+      await this._hass.callService("select", "select_option", {
+        entity_id: entityId,
+        option: value,
+      });
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("solar-charge-mode-card: service call failed", err);
+    }
+  }
+
+  _styles() {
+    return `
+      :host { display: block; }
+      ha-card {
+        padding: 12px 14px 14px;
+        background: var(--ha-card-background, var(--card-background-color, #1c1f24));
+        color: var(--primary-text-color, #e8e8e8);
+      }
+      .title {
+        font-size: 0.95rem;
+        font-weight: 600;
+        opacity: 0.85;
+        margin-bottom: 10px;
+        letter-spacing: 0.02em;
+      }
+      .strip {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .chip {
+        --chip-color: #9aa0a6;
+        flex: 1 1 80px;
+        min-width: 72px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        padding: 10px 12px;
+        font-family: inherit;
+        font-size: 0.78rem;
+        font-weight: 600;
+        letter-spacing: 0.02em;
+        color: var(--chip-color);
+        background: rgba(255, 255, 255, 0.035);
+        border: 1.5px solid var(--chip-color);
+        border-radius: 14px;
+        cursor: pointer;
+        transition:
+          background 180ms ease,
+          color 180ms ease,
+          transform 150ms ease,
+          box-shadow 200ms ease,
+          border-color 180ms ease;
+        opacity: 0.55;
+      }
+      .chip:hover {
+        opacity: 0.85;
+        background: rgba(255, 255, 255, 0.07);
+        transform: translateY(-1px);
+      }
+      .chip svg {
+        width: 18px;
+        height: 18px;
+        fill: currentColor;
+        filter: drop-shadow(0 0 3px rgba(0,0,0,0.35));
+      }
+      .chip.active {
+        opacity: 1;
+        color: #0b0d12;
+        background: var(--chip-color);
+        border-color: var(--chip-color);
+        box-shadow: 0 0 14px -2px var(--chip-color);
+      }
+      .chip.active svg { filter: none; }
+      @media (max-width: 420px) {
+        .chip span { display: none; }
+        .chip { flex: 0 0 auto; padding: 10px; }
+      }
+    `;
+  }
+}
+
+class SolarChargeModeCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: "open" });
+    this._config = {};
+  }
+
+  setConfig(config) {
+    this._config = { ...config };
+    this._render();
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+  }
+
+  _render() {
+    const fields = [
+      ["title", "Title (empty to hide)"],
+      ["mode_entity", "Mode select entity"],
+    ];
+    this.shadowRoot.innerHTML = `
+      <style>
+        .editor { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
+        label { display: flex; flex-direction: column; font-size: 0.85rem; gap: 4px; }
+        input { padding: 6px 8px; font-size: 0.9rem;
+                background: var(--secondary-background-color, #2a2a2a);
+                color: var(--primary-text-color, #eee);
+                border: 1px solid rgba(255,255,255,0.15);
+                border-radius: 6px; }
+        .hint { font-size: 0.75rem; opacity: 0.65; }
+      </style>
+      <div class="editor">
+        ${fields
+          .map(
+            ([k, lbl]) => `
+          <label>
+            <span>${lbl}</span>
+            <input data-key="${k}" value="${this._config[k] ?? ""}" />
+          </label>`
+          )
+          .join("")}
+        <div class="hint">
+          To show only a subset of modes, edit the YAML and add
+          <code>modes: [off, eco, balanced, boost_car, boost_battery, fast]</code>
+          with the values you want displayed.
+        </div>
+      </div>
+    `;
+    this.shadowRoot.querySelectorAll("input[data-key]").forEach((inp) => {
+      inp.addEventListener("change", (ev) => {
+        const key = ev.target.dataset.key;
+        const value = ev.target.value;
+        const next = { ...this._config };
+        if (value === "") delete next[key];
+        else next[key] = value;
+        this._config = next;
+        this.dispatchEvent(
+          new CustomEvent("config-changed", { detail: { config: next } })
+        );
+      });
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Safe registration (idempotent: script may load twice)
 // ---------------------------------------------------------------------------
 if (!customElements.get("solar-charge-card")) {
@@ -1539,4 +1847,13 @@ if (!customElements.get("solar-charge-card")) {
 }
 if (!customElements.get("solar-charge-card-editor")) {
   customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
+}
+if (!customElements.get("solar-charge-mode-card")) {
+  customElements.define("solar-charge-mode-card", SolarChargeModeCard);
+}
+if (!customElements.get("solar-charge-mode-card-editor")) {
+  customElements.define(
+    "solar-charge-mode-card-editor",
+    SolarChargeModeCardEditor
+  );
 }

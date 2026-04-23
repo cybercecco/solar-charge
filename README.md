@@ -122,6 +122,20 @@ chargers:
 
 *Suggerimento*: le entità per-colonnina usano lo slug del nome che hai dato alla wallbox. Dopo aver configurato le colonnine, controlla in **Sviluppatore → Stati** per trovare gli ID esatti.
 
+### Card di selezione modalità
+
+Oltre alla card principale, il pacchetto registra anche **Solar Charge Mode Selector** (`custom:solar-charge-mode-card`): una striscia compatta di pulsanti con icone per scegliere al volo la modalità dell'integrazione. Solo il pulsante corrispondente alla modalità corrente è acceso; un tap chiama `select.select_option` sull'entità `select.solar_charge_balancing_mode`.
+
+```yaml
+type: custom:solar-charge-mode-card
+title: Modalità di carica
+mode_entity: select.solar_charge_balancing_mode
+# opzionale: mostra solo un sottoinsieme delle modalità
+# modes: [off, eco, balanced, boost_car, boost_battery, fast]
+```
+
+Le modalità disponibili sono `off`, `eco`, `balanced`, `boost_car`, `boost_battery`, `fast`. Quando aggiungi la card dal picker, `mode_entity` viene rilevata automaticamente dall'entità `select` dell'integrazione.
+
 ### Convenzione del segno grid nella card
 
 La card assume la convenzione interna dell'integrazione: **Grid > 0 = import (rete → casa)**, **Grid < 0 = export (casa → rete)**. Se punti `grid_entity` al sensore normalizzato `sensor.solar_charge_grid_power` e hai configurato correttamente il flag *"Rete: export negativo"* nelle opzioni dell'integrazione, l'animazione andrà nel verso giusto.
