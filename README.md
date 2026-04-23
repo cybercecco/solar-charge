@@ -87,6 +87,8 @@ Ogni campo mostra un **tooltip descrittivo** (la descrizione è tradotta).
 
 ## Card Lovelace
 
+Quando aggiungi **Solar Charge Card** dalla picker delle dashboard, la configurazione YAML viene **compilata automaticamente** leggendo tutte le entità registrate dall'integrazione: hub principale (PV, casa, rete, batteria, SOC, modalità, boost), tutte le colonnine e tutte le batterie di casa. Devi solo compilare ciò che l'auto-rilevamento non trova (p. es. se hai aggiunto la card prima di configurare una wallbox). Esempio di output equivalente:
+
 ```yaml
 type: custom:solar-charge-card
 title: Casa & Auto

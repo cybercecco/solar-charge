@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.9.2";
+const CARD_VERSION = "0.9.3";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -124,19 +124,143 @@ class SolarChargeCard extends HTMLElement {
     return document.createElement("solar-charge-card-editor");
   }
 
-  static getStubConfig() {
-    return {
+  // Auto-fill the card config from the running Solar Charge integration.
+  // Home Assistant calls this with (hass, entities, entitiesFallback) when
+  // the user adds the card. We walk hass.entities for platform=solar_charge,
+  // group by their device (via hass.devices identifiers) and build:
+  //   - main hub sensors (pv, house, grid, battery*, ev_recommended, mode, boost)
+  //   - chargers[] (one object per wallbox sub-device)
+  //   - batteries[] (one object per battery sub-device)
+  // Anything missing falls back to the previous hardcoded defaults, so the
+  // card still works if the lookup fails.
+  static async getStubConfig(hass /*, entities, entitiesFallback */) {
+    const fallback = {
       title: "Solar Charge",
       pv_entity: "sensor.solar_charge_pv_power",
       house_entity: "sensor.solar_charge_house_power",
       grid_entity: "sensor.solar_charge_grid_power",
       battery_entity: "sensor.solar_charge_battery_power",
       battery_soc_entity: "sensor.solar_charge_battery_soc",
-      ev_recommended_entity: "sensor.solar_charge_ev_recommended_power_total",
-      mode_entity: "select.solar_charge_mode",
+      ev_recommended_entity: "sensor.solar_charge_recommended_ev_power_total",
+      mode_entity: "select.solar_charge_balancing_mode",
       boost_battery_entity: "switch.solar_charge_boost_battery",
       chargers: [],
     };
+    try {
+      const registry = hass?.entities || {};
+      const devices = hass?.devices || {};
+      const scEntries = Object.values(registry).filter(
+        (e) => e && e.platform === "solar_charge"
+      );
+      if (!scEntries.length) return fallback;
+
+      // Group entities by their device_id, and each device by its
+      // solar_charge identifier (entry_id / entry_id_charger_X / entry_id_battery_X).
+      const byDevice = new Map();
+      for (const e of scEntries) {
+        if (!e.device_id) continue;
+        if (!byDevice.has(e.device_id)) byDevice.set(e.device_id, []);
+        byDevice.get(e.device_id).push(e);
+      }
+
+      const findByKey = (ents, suffix) => {
+        const hit = ents.find((e) =>
+          (e.unique_id || "").endsWith(`_${suffix}`)
+        );
+        return hit ? hit.entity_id : undefined;
+      };
+      const prettyName = (dev, fallbackName) => {
+        const raw = dev?.name_by_user || dev?.name || fallbackName || "";
+        // charger/battery sub-devices are named "<entry title> — <slug>"
+        const parts = raw.split("—");
+        return (parts[parts.length - 1] || raw).trim();
+      };
+      const extractKind = (dev) => {
+        const ids = dev?.identifiers || [];
+        for (const pair of ids) {
+          if (!Array.isArray(pair) || pair[0] !== "solar_charge") continue;
+          const raw = String(pair[1] || "");
+          const ci = raw.indexOf("_charger_");
+          if (ci !== -1) return { kind: "charger", id: raw.slice(ci + 9) };
+          const bi = raw.indexOf("_battery_");
+          if (bi !== -1) return { kind: "battery", id: raw.slice(bi + 9) };
+          return { kind: "main", id: raw };
+        }
+        return null;
+      };
+
+      let mainEnts = null;
+      const chargerGroups = [];
+      const batteryGroups = [];
+      for (const [did, ents] of byDevice) {
+        const dev = devices[did];
+        const info = extractKind(dev);
+        if (!info) continue;
+        if (info.kind === "main") mainEnts = ents;
+        else if (info.kind === "charger")
+          chargerGroups.push({ cid: info.id, dev, ents });
+        else if (info.kind === "battery")
+          batteryGroups.push({ bid: info.id, dev, ents });
+      }
+
+      const cfg = { title: "Solar Charge" };
+      if (mainEnts) {
+        const globalMap = {
+          pv_entity: "pv_power",
+          house_entity: "house_power",
+          grid_entity: "grid_power",
+          battery_entity: "battery_power",
+          battery_soc_entity: "battery_soc",
+          ev_recommended_entity: "recommended_ev_power_total",
+          mode_entity: "mode",
+          boost_battery_entity: "boost_battery",
+        };
+        for (const [key, suffix] of Object.entries(globalMap)) {
+          const found = findByKey(mainEnts, suffix);
+          if (found) cfg[key] = found;
+        }
+      }
+      if (chargerGroups.length) {
+        cfg.chargers = chargerGroups
+          .map(({ cid, dev, ents }) => {
+            const c = {
+              name: prettyName(dev, cid),
+              power_entity: findByKey(ents, "power"),
+              recommended_power_entity: findByKey(ents, "recommended_power"),
+            };
+            const recCurr = findByKey(ents, "recommended_current");
+            if (recCurr) c.recommended_current_entity = recCurr;
+            const charging = findByKey(ents, "charging");
+            if (charging) c.charging_entity = charging;
+            const boost = findByKey(ents, "boost");
+            if (boost) c.boost_entity = boost;
+            return c;
+          })
+          .filter((c) => c.power_entity);
+      }
+      if (batteryGroups.length) {
+        cfg.batteries = batteryGroups
+          .map(({ bid, dev, ents }) => {
+            const b = {
+              id: bid,
+              name: prettyName(dev, bid),
+              power_entity: findByKey(ents, "power"),
+            };
+            const soc = findByKey(ents, "soc");
+            if (soc) b.soc_entity = soc;
+            return b;
+          })
+          .filter((b) => b.power_entity);
+      }
+
+      if (!mainEnts && !(cfg.chargers || []).length && !(cfg.batteries || []).length) {
+        return fallback;
+      }
+      return cfg;
+    } catch (err) {
+      console.warn("[solar-charge-card] getStubConfig fallback:", err);
+      return fallback;
+    }
   }
 
   getCardSize() {
