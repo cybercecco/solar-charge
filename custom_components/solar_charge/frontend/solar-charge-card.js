@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.11.0";
+const CARD_VERSION = "0.11.1";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -292,16 +292,58 @@ class SolarChargeCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
     this._config = { ...config };
-    // Reset mount state → full rebuild on next hass assignment
     this._mounted = false;
-    if (this._hass) this._render();
+    try {
+      if (this._hass) this._render();
+    } catch (err) {
+      // Never let setConfig throw up to Lovelace: the picker tile would
+      // otherwise spin forever with no rendered output. Fall back to a
+      // minimal static card so at least the tile is clickable.
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-card] render failed, using fallback:", err);
+      this._renderFallback(err);
+    }
   }
 
   set hass(hass) {
     const firstRun = !this._hass;
     this._hass = hass;
-    if (!this._mounted) this._render();
-    else if (!firstRun) this._update();
+    try {
+      if (!this._mounted) this._render();
+      else if (!firstRun) this._update();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-card] update failed, using fallback:", err);
+      this._renderFallback(err);
+    }
+  }
+
+  // Minimal always-renderable fallback so the Lovelace card picker can
+  // never get stuck on an unresolved preview, even if the main render
+  // path throws for an unexpected reason.
+  _renderFallback(err) {
+    const msg = err && err.message ? String(err.message) : "";
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { padding: 14px 16px;
+                  background: var(--ha-card-background, #1c1f24);
+                  color: var(--primary-text-color, #e8e8e8);
+                  display: block; }
+        .title { font-weight: 600; font-size: 0.95rem; }
+        .version { opacity: 0.55; font-size: 0.75rem; margin-top: 4px; }
+        .hint { opacity: 0.65; font-size: 0.78rem; margin-top: 8px; line-height: 1.35; }
+        pre { margin: 8px 0 0; padding: 6px 8px; border-radius: 4px;
+              background: rgba(0,0,0,0.25); font-size: 0.7rem;
+              overflow: auto; max-height: 120px; }
+      </style>
+      <ha-card>
+        <div class="title">Solar Charge Card</div>
+        <div class="version">v${CARD_VERSION} — modalità compatibile</div>
+        <div class="hint">Configura le entità nell'editor o in YAML (pv_entity, grid_entity, battery_entity, ecc.) per abilitare il grafo animato.</div>
+        ${msg ? `<pre>${msg.replace(/</g, "&lt;")}</pre>` : ""}
+      </ha-card>
+    `;
+    this._mounted = true;
   }
 
   disconnectedCallback() {
@@ -1428,6 +1470,12 @@ class SolarChargeCard extends HTMLElement {
   }
 }
 
+// Register the main card eagerly, before any subsequent class declaration
+// so a later parse/runtime failure cannot prevent this registration.
+if (!customElements.get("solar-charge-card")) {
+  customElements.define("solar-charge-card", SolarChargeCard);
+}
+
 // ---------------------------------------------------------------------------
 // Visual editor (simple HTML form — no Lit dependency either)
 // ---------------------------------------------------------------------------
@@ -1541,6 +1589,10 @@ batteries:
   }
 }
 
+if (!customElements.get("solar-charge-card-editor")) {
+  customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
+}
+
 // ---------------------------------------------------------------------------
 // Mode selector card — compact pill strip that drives the integration's
 // `select.solar_charge_balancing_mode` entity. Only the active mode lights
@@ -1630,14 +1682,41 @@ class SolarChargeModeCard extends HTMLElement {
     if (!config) throw new Error("Invalid configuration");
     this._config = { ...config };
     this._mounted = false;
-    if (this._hass) this._render();
+    try {
+      if (this._hass) this._render();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-mode-card] render failed:", err);
+      this._renderFallback();
+    }
   }
 
   set hass(hass) {
     const first = !this._hass;
     this._hass = hass;
-    if (!this._mounted) this._render();
-    else if (!first) this._update();
+    try {
+      if (!this._mounted) this._render();
+      else if (!first) this._update();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-mode-card] update failed:", err);
+      this._renderFallback();
+    }
+  }
+
+  _renderFallback() {
+    this.shadowRoot.innerHTML = `
+      <style>
+        ha-card { padding: 12px 14px; display:block; }
+        .t { font-weight: 600; font-size: 0.95rem; }
+        .h { font-size: 0.78rem; opacity: 0.7; margin-top: 6px; }
+      </style>
+      <ha-card>
+        <div class="t">Solar Charge Mode Selector</div>
+        <div class="h">Configura <code>mode_entity</code> (es. <code>select.solar_charge_balancing_mode</code>).</div>
+      </ha-card>
+    `;
+    this._mounted = true;
   }
 
   _visibleModes() {
@@ -1772,6 +1851,10 @@ class SolarChargeModeCard extends HTMLElement {
       }
     `;
   }
+}
+
+if (!customElements.get("solar-charge-mode-card")) {
+  customElements.define("solar-charge-mode-card", SolarChargeModeCard);
 }
 
 class SolarChargeModeCardEditor extends HTMLElement {
