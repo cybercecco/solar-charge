@@ -89,6 +89,10 @@ Ogni campo mostra un **tooltip descrittivo** (la descrizione è tradotta).
 
 Quando aggiungi **Solar Charge Card** dalla picker delle dashboard, la configurazione YAML viene **compilata automaticamente** leggendo tutte le entità registrate dall'integrazione: hub principale (PV, casa, rete, batteria, SOC, modalità, boost), tutte le colonnine e tutte le batterie di casa. Devi solo compilare ciò che l'auto-rilevamento non trova (p. es. se hai aggiunto la card prima di configurare una wallbox). Esempio di output equivalente:
 
+### Layout magnetico, drag & drop
+
+I balloon sono disposti su un grafo attorno a **Home** (fissa al centro) usando una simulazione fisica: ogni nodo ha una molla verso la sua posizione naturale (Solar in alto, Grid a sinistra, batterie a sud-ovest, wallbox a sud-est) e tutti si respingono reciprocamente per non sovrapporsi mai. Puoi **trascinare** qualsiasi balloon con il mouse o il tocco: gli altri si spostano per fargli spazio, e quando lo rilasci quella diventa la sua nuova posizione "magnetica". Home resta sempre al centro. Il loop si ferma da solo quando il sistema si stabilizza, quindi niente CPU sprecata.
+
 ```yaml
 type: custom:solar-charge-card
 title: Casa & Auto

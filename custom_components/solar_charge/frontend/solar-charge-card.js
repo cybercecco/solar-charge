@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.9.3";
+const CARD_VERSION = "0.10.0";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -114,7 +114,19 @@ class SolarChargeCard extends HTMLElement {
     this._config = null;
     this._hass = null;
     this._resizeObserver = null;
-    this._onResize = () => this._drawConnections();
+    // Physics simulation state. Map key → NodeState:
+    //   { key, el, kind, pinned, dragging, r, pos:{x,y}, vel:{x,y}, rest:{x,y}, initialized }
+    this._sim = {
+      nodes: new Map(),
+      raf: 0,
+      running: false,
+      idleFrames: 0,
+      last: 0,
+    };
+    this._onResize = () => {
+      this._recomputeRestPositions(true);
+      this._startSimLoop();
+    };
   }
 
   // ------------------------------------------------------------------
@@ -288,6 +300,7 @@ class SolarChargeCard extends HTMLElement {
       this._resizeObserver = null;
     }
     window.removeEventListener("resize", this._onResize);
+    this._stopSimLoop();
   }
 
   // ------------------------------------------------------------------
@@ -295,6 +308,7 @@ class SolarChargeCard extends HTMLElement {
   // ------------------------------------------------------------------
   _render() {
     if (!this._config) return;
+    const descriptors = this._collectNodeDescriptors();
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
       <ha-card>
@@ -305,19 +319,9 @@ class SolarChargeCard extends HTMLElement {
         <div class="stage">
           <svg class="wires" preserveAspectRatio="none"></svg>
           <div class="nodes">
-            <div class="row top">
-              ${this._nodeHTML("solar", "Solar", ICONS.solar)}
-            </div>
-            <div class="row middle">
-              ${this._nodeHTML("grid", "Grid", ICONS.grid, { bidirectional: true })}
-              <div class="spacer"></div>
-              ${this._nodeHTML("home", "Home", ICONS.home, { large: true })}
-            </div>
-            <div class="row bottom">
-              <div class="group batteries">${this._batteriesHTML()}</div>
-              <div class="group chargers">${this._chargersHTML()}</div>
-            </div>
+            ${descriptors.map((d) => this._nodeHTML(d)).join("")}
           </div>
+          <div class="hint">Trascina i balloon per riposizionarli</div>
         </div>
         ${this._boostBarHTML()}
       </ha-card>
@@ -325,62 +329,80 @@ class SolarChargeCard extends HTMLElement {
 
     this._mounted = true;
     this._bindActions();
+    this._initSimulationFromDescriptors(descriptors);
+    this._bindDragHandlers();
     this._observeResize();
     this._update();
   }
 
-  _nodeHTML(kind, label, iconPath, opts = {}) {
-    const { large = false, bidirectional = false, dataKey = kind } = opts;
-    return `
-      <div class="node ${kind} ${large ? "large" : ""}"
-           data-kind="${kind}" data-key="${dataKey}">
-        <div class="circle">
-          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
-            <path d="${iconPath}"/>
-          </svg>
-          <div class="value"></div>
-          ${bidirectional ? '<div class="flow"></div>' : ""}
-        </div>
-        <div class="label">${label}</div>
-      </div>
-    `;
-  }
-
-  _batteriesHTML() {
-    const list = this._resolveBatteries();
-    if (!list.length) {
-      return this._nodeHTML("battery", "Battery", ICONS.battery, {
+  // Flat list of every balloon we want on the stage. Order doesn't matter
+  // (positions are physics-driven), but it's stable for DOM diffing.
+  _collectNodeDescriptors() {
+    const descs = [
+      { key: "solar", kind: "solar", label: "Solar", icon: ICONS.solar },
+      { key: "grid", kind: "grid", label: "Grid", icon: ICONS.grid, bidirectional: true },
+      { key: "home", kind: "home", label: "Home", icon: ICONS.home, large: true, pinned: true },
+    ];
+    const batteries = this._resolveBatteries();
+    if (!batteries.length) {
+      descs.push({
+        key: "battery:_main",
+        kind: "battery",
+        label: "Battery",
+        icon: ICONS.battery,
         bidirectional: true,
-        dataKey: "battery:_main",
       });
-    }
-    return list
-      .map((b, i) =>
-        this._nodeHTML("battery", b.name || `Battery ${i + 1}`, ICONS.battery, {
+    } else {
+      batteries.forEach((b, i) =>
+        descs.push({
+          key: `battery:${b.id ?? i}`,
+          kind: "battery",
+          label: b.name || `Battery ${i + 1}`,
+          icon: ICONS.battery,
           bidirectional: true,
-          dataKey: `battery:${b.id ?? i}`,
         })
-      )
-      .join("");
-  }
-
-  _chargersHTML() {
+      );
+    }
     const chargers = this._config.chargers || [];
     if (!chargers.length) {
       if (this._config.ev_entity || this._config.ev_recommended_entity) {
-        return this._nodeHTML("charger", "Wallbox", ICONS.charger, {
-          dataKey: "charger:_main",
+        descs.push({
+          key: "charger:_main",
+          kind: "charger",
+          label: "Wallbox",
+          icon: ICONS.charger,
         });
       }
-      return "";
-    }
-    return chargers
-      .map((ch, i) =>
-        this._nodeHTML("charger", ch.name || `EV ${i + 1}`, ICONS.charger, {
-          dataKey: `charger:${i}`,
+    } else {
+      chargers.forEach((ch, i) =>
+        descs.push({
+          key: `charger:${i}`,
+          kind: "charger",
+          label: ch.name || `EV ${i + 1}`,
+          icon: ICONS.charger,
         })
-      )
-      .join("");
+      );
+    }
+    return descs;
+  }
+
+  _nodeHTML(d) {
+    const classes = ["node", d.kind];
+    if (d.large) classes.push("large");
+    if (d.pinned) classes.push("pinned");
+    return `
+      <div class="${classes.join(" ")}"
+           data-kind="${d.kind}" data-key="${d.key}">
+        <div class="circle">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="${d.icon}"/>
+          </svg>
+          <div class="value"></div>
+          ${d.bidirectional ? '<div class="flow"></div>' : ""}
+        </div>
+        <div class="label">${d.label}</div>
+      </div>
+    `;
   }
 
   _modeChipsHTML() {
@@ -429,6 +451,327 @@ class SolarChargeCard extends HTMLElement {
       : "";
 
     return `<div class="boost-bar">${chargerBtns}${batteryBtn}</div>`;
+  }
+
+  // ------------------------------------------------------------------
+  // Physics simulation
+  //
+  // Each balloon is a point mass with a spring toward its "rest" position
+  // and pairwise repulsion against every other node. The Home node is
+  // pinned at the center. Drag disables forces on the grabbed node; on
+  // release the drop location becomes the new rest ("magnetic" placement).
+  // The integrator runs while any node has non-negligible velocity and
+  // stops itself when the system settles (save CPU).
+  // ------------------------------------------------------------------
+  _initSimulationFromDescriptors(descriptors) {
+    const next = new Map();
+    descriptors.forEach((d) => {
+      const el = this.shadowRoot.querySelector(
+        `.node[data-key="${CSS.escape(d.key)}"]`
+      );
+      if (!el) return;
+      const prior = this._sim.nodes.get(d.key);
+      next.set(d.key, {
+        key: d.key,
+        kind: d.kind,
+        el,
+        pinned: !!d.pinned,
+        dragging: false,
+        r: d.large ? 46 : 36, // effective collision radius (CSS circle / 2)
+        pos: prior ? { ...prior.pos } : { x: 0, y: 0 },
+        vel: prior ? { ...prior.vel } : { x: 0, y: 0 },
+        rest: prior ? { ...prior.rest } : { x: 0, y: 0 },
+        initialized: !!prior?.initialized,
+      });
+    });
+    this._sim.nodes = next;
+    this._sim.idleFrames = 0;
+    // Defer one frame so the stage has real dimensions.
+    requestAnimationFrame(() => {
+      this._recomputeRestPositions(false);
+      this._startSimLoop();
+    });
+  }
+
+  _recomputeRestPositions(preservePos) {
+    const stage = this.shadowRoot.querySelector(".stage");
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const W = rect.width, H = rect.height;
+    if (W < 10 || H < 10) return;
+
+    const home = this._sim.nodes.get("home");
+    if (home) {
+      home.rest = { x: W / 2, y: H / 2 };
+      home.pos = { ...home.rest };
+    }
+
+    const satellites = [];
+    this._sim.nodes.forEach((s) => {
+      if (s.key !== "home") satellites.push(s);
+    });
+
+    // Anchor angle per "kind" (radians; 0 = right, -π/2 = top).
+    const kindAnchor = {
+      solar: -Math.PI / 2,
+      grid: Math.PI,
+      battery: (Math.PI * 3) / 4,
+      charger: Math.PI / 4,
+    };
+    // Group satellites by kind to spread multiples around their anchor.
+    const groups = new Map();
+    satellites.forEach((s) => {
+      if (!groups.has(s.kind)) groups.set(s.kind, []);
+      groups.get(s.kind).push(s);
+    });
+
+    const cx = W / 2, cy = H / 2;
+    const radius = Math.max(110, Math.min(W, H) * 0.38);
+    const spread = Math.PI / 5;
+
+    groups.forEach((items, kind) => {
+      const anchor = kindAnchor[kind] ?? 0;
+      items.forEach((s, i) => {
+        const n = items.length;
+        let angle;
+        if (n === 1) angle = anchor;
+        else {
+          const step = spread / (n - 1);
+          angle = anchor - spread / 2 + i * step;
+        }
+        const rx = cx + Math.cos(angle) * radius;
+        const ry = cy + Math.sin(angle) * radius;
+        s.rest = { x: rx, y: ry };
+        if (!s.initialized) {
+          s.pos = { x: rx, y: ry };
+          s.initialized = true;
+        } else if (!preservePos) {
+          s.pos = { x: rx, y: ry };
+        }
+        this._positionNode(s);
+      });
+    });
+    if (home) this._positionNode(home);
+  }
+
+  // Translate the node element so that its circle center sits at pos.
+  _positionNode(s) {
+    const circle = s.el.querySelector(".circle");
+    if (!circle) return;
+    // offsetLeft/offsetTop of circle = relative to node top-left.
+    const cx = circle.offsetLeft + circle.offsetWidth / 2;
+    const cy = circle.offsetTop + circle.offsetHeight / 2;
+    s.el.style.transform = `translate3d(${s.pos.x - cx}px, ${s.pos.y - cy}px, 0)`;
+  }
+
+  _startSimLoop() {
+    if (this._sim.running) return;
+    this._sim.running = true;
+    this._sim.idleFrames = 0;
+    this._sim.last = performance.now();
+    const tick = (t) => {
+      if (!this._sim.running) return;
+      const dt = Math.min((t - this._sim.last) / 1000, 1 / 30);
+      this._sim.last = t;
+      this._stepSimulation(dt);
+      this._updateWireGeometry();
+      this._sim.raf = requestAnimationFrame(tick);
+    };
+    this._sim.raf = requestAnimationFrame(tick);
+  }
+
+  _stopSimLoop() {
+    this._sim.running = false;
+    if (this._sim.raf) cancelAnimationFrame(this._sim.raf);
+    this._sim.raf = 0;
+  }
+
+  _anyDragging() {
+    let any = false;
+    this._sim.nodes.forEach((s) => {
+      if (s.dragging) any = true;
+    });
+    return any;
+  }
+
+  _stepSimulation(dt) {
+    const K_SPRING = 7;      // spring stiffness toward rest
+    const K_REPULSE = 45000; // soft repulsion strength (r² falloff)
+    const DAMPING = 0.82;
+    const PADDING = 8;       // extra gap between balloons (px)
+
+    const stage = this.shadowRoot.querySelector(".stage");
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    const W = rect.width, H = rect.height;
+    if (W < 10 || H < 10) return;
+
+    const states = Array.from(this._sim.nodes.values());
+
+    // Zero accumulators
+    states.forEach((s) => {
+      s._fx = 0;
+      s._fy = 0;
+    });
+
+    // Spring forces (not on pinned / dragging)
+    states.forEach((s) => {
+      if (s.pinned || s.dragging) return;
+      s._fx += (s.rest.x - s.pos.x) * K_SPRING;
+      s._fy += (s.rest.y - s.pos.y) * K_SPRING;
+    });
+
+    // Pairwise repulsion
+    for (let i = 0; i < states.length; i++) {
+      const a = states[i];
+      for (let j = i + 1; j < states.length; j++) {
+        const b = states[j];
+        const dx = b.pos.x - a.pos.x;
+        const dy = b.pos.y - a.pos.y;
+        const dist2 = dx * dx + dy * dy + 0.01;
+        const dist = Math.sqrt(dist2);
+        const minSep = a.r + b.r + PADDING;
+        const range = minSep * 2.4;
+        if (dist > range) continue;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        let force;
+        if (dist < minSep) {
+          // Hard push: proportional to penetration depth
+          force = (minSep - dist) * 900;
+        } else {
+          force = K_REPULSE / dist2;
+        }
+        a._fx -= nx * force;
+        a._fy -= ny * force;
+        b._fx += nx * force;
+        b._fy += ny * force;
+      }
+    }
+
+    // Integrate
+    states.forEach((s) => {
+      if (s.pinned || s.dragging) return;
+      s.vel.x = (s.vel.x + s._fx * dt) * DAMPING;
+      s.vel.y = (s.vel.y + s._fy * dt) * DAMPING;
+      s.pos.x += s.vel.x * dt;
+      s.pos.y += s.vel.y * dt;
+      s.pos.x = Math.max(s.r, Math.min(W - s.r, s.pos.x));
+      s.pos.y = Math.max(s.r, Math.min(H - s.r, s.pos.y));
+    });
+
+    // Hard overlap resolver (a few relaxation passes)
+    for (let pass = 0; pass < 3; pass++) {
+      for (let i = 0; i < states.length; i++) {
+        const a = states[i];
+        for (let j = i + 1; j < states.length; j++) {
+          const b = states[j];
+          const dx = b.pos.x - a.pos.x;
+          const dy = b.pos.y - a.pos.y;
+          const dist = Math.hypot(dx, dy) || 0.001;
+          const minSep = a.r + b.r + PADDING;
+          if (dist >= minSep) continue;
+          const push = (minSep - dist) / 2;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          // Pinned nodes don't move; dragging nodes push others fully.
+          const aMovable = !(a.pinned || a.dragging);
+          const bMovable = !(b.pinned || b.dragging);
+          if (aMovable && bMovable) {
+            a.pos.x -= nx * push;
+            a.pos.y -= ny * push;
+            b.pos.x += nx * push;
+            b.pos.y += ny * push;
+          } else if (aMovable) {
+            a.pos.x -= nx * push * 2;
+            a.pos.y -= ny * push * 2;
+          } else if (bMovable) {
+            b.pos.x += nx * push * 2;
+            b.pos.y += ny * push * 2;
+          }
+        }
+      }
+      states.forEach((s) => {
+        if (s.pinned) return;
+        s.pos.x = Math.max(s.r, Math.min(W - s.r, s.pos.x));
+        s.pos.y = Math.max(s.r, Math.min(H - s.r, s.pos.y));
+      });
+    }
+
+    // Paint & idle check
+    let maxV = 0;
+    states.forEach((s) => {
+      this._positionNode(s);
+      const v = Math.hypot(s.vel.x, s.vel.y);
+      if (v > maxV) maxV = v;
+    });
+    if (maxV < 0.4 && !this._anyDragging()) {
+      this._sim.idleFrames++;
+      if (this._sim.idleFrames > 20) this._stopSimLoop();
+    } else {
+      this._sim.idleFrames = 0;
+    }
+  }
+
+  _bindDragHandlers() {
+    this.shadowRoot.querySelectorAll(".node").forEach((el) => {
+      const key = el.dataset.key;
+      const state = this._sim.nodes.get(key);
+      if (!state || state.pinned) return;
+      el.addEventListener("pointerdown", (ev) =>
+        this._onDragStart(ev, state, el)
+      );
+    });
+  }
+
+  _onDragStart(ev, state, el) {
+    // Only primary button / first touch
+    if (ev.button !== undefined && ev.button !== 0) return;
+    ev.preventDefault();
+    try {
+      el.setPointerCapture(ev.pointerId);
+    } catch (_) {
+      /* ignore */
+    }
+    el.classList.add("dragging");
+    state.dragging = true;
+    state.vel.x = 0;
+    state.vel.y = 0;
+    const stage = this.shadowRoot.querySelector(".stage");
+    const rect = stage.getBoundingClientRect();
+    const grabOffsetX = state.pos.x - (ev.clientX - rect.left);
+    const grabOffsetY = state.pos.y - (ev.clientY - rect.top);
+
+    const onMove = (e) => {
+      const r = stage.getBoundingClientRect();
+      let x = e.clientX - r.left + grabOffsetX;
+      let y = e.clientY - r.top + grabOffsetY;
+      x = Math.max(state.r, Math.min(r.width - state.r, x));
+      y = Math.max(state.r, Math.min(r.height - state.r, y));
+      state.pos.x = x;
+      state.pos.y = y;
+      this._positionNode(state);
+      this._startSimLoop(); // let others yield to the dragged node
+    };
+    const onUp = () => {
+      state.dragging = false;
+      // Magnetic placement: the drop location becomes the new rest anchor
+      state.rest.x = state.pos.x;
+      state.rest.y = state.pos.y;
+      el.classList.remove("dragging");
+      try {
+        el.releasePointerCapture(ev.pointerId);
+      } catch (_) {
+        /* ignore */
+      }
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.removeEventListener("pointercancel", onUp);
+      this._startSimLoop();
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
   }
 
   // ------------------------------------------------------------------
@@ -604,22 +947,23 @@ class SolarChargeCard extends HTMLElement {
 
   // ------------------------------------------------------------------
   // SVG wires
+  //
+  // The stage redraws at 60 fps during the physics simulation, so we
+  // split the work in two:
+  //  _drawConnections()   rebuilds the SVG tree (paths + particles +
+  //                       defs) when flow state or topology changes.
+  //  _updateWireGeometry() updates only the <path d=…> of existing wires
+  //                       during simulation. This keeps <animateMotion>
+  //                       particles alive instead of restarting them.
   // ------------------------------------------------------------------
-  _drawConnections() {
+  _collectWires() {
     const svg = this.shadowRoot.querySelector(".wires");
     const home = this.shadowRoot.querySelector('.node[data-kind="home"]');
-    if (!svg || !home) return;
     const stage = this.shadowRoot.querySelector(".stage");
-    if (!stage) return;
-
+    if (!svg || !home || !stage) return null;
     const rect = stage.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) return; // not laid out yet
-    svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
-    svg.removeAttribute("width");
-    svg.removeAttribute("height");
+    if (rect.width < 2 || rect.height < 2) return null;
 
-    // Geometry is computed on the `.circle` element (not `.node`, which
-    // includes the label underneath and would shift the center down).
     const circleGeom = (nodeEl) => {
       const c = nodeEl.querySelector(".circle");
       const r = c.getBoundingClientRect();
@@ -629,9 +973,6 @@ class SolarChargeCard extends HTMLElement {
         r: r.width / 2,
       };
     };
-
-    const homeG = circleGeom(home);
-
     const edgePoint = (fromX, fromY, toX, toY, r) => {
       const dx = toX - fromX;
       const dy = toY - fromY;
@@ -639,28 +980,65 @@ class SolarChargeCard extends HTMLElement {
       return { x: toX - (dx / len) * r, y: toY - (dy / len) * r };
     };
 
+    const homeG = circleGeom(home);
     const wires = [];
-    const sources = this.shadowRoot.querySelectorAll(".node:not([data-kind='home'])");
-    sources.forEach((node) => {
-      const key = node.dataset.key;
-      const kind = node.dataset.kind;
-      const src = circleGeom(node);
-      // Edge of the source circle pointing toward home.
-      const srcEdge = edgePoint(homeG.cx, homeG.cy, src.cx, src.cy, src.r);
-      // Edge of the home circle pointing toward this source.
-      const homeEdge = edgePoint(src.cx, src.cy, homeG.cx, homeG.cy, homeG.r);
+    this.shadowRoot
+      .querySelectorAll(".node:not([data-kind='home'])")
+      .forEach((node) => {
+        const key = node.dataset.key;
+        const kind = node.dataset.kind;
+        const src = circleGeom(node);
+        const srcEdge = edgePoint(homeG.cx, homeG.cy, src.cx, src.cy, src.r);
+        const homeEdge = edgePoint(src.cx, src.cy, homeG.cx, homeG.cy, homeG.r);
+        const d = curvePath(srcEdge.x, srcEdge.y, homeEdge.x, homeEdge.y);
+        const color = NODE_COLORS[kind] || NODE_COLORS.muted;
+        const flow = this._flowState?.[key] || 0;
+        wires.push({ key, d, color, flow, active: flow !== 0, kind });
+      });
 
-      const d = curvePath(srcEdge.x, srcEdge.y, homeEdge.x, homeEdge.y);
-      const color = NODE_COLORS[kind] || NODE_COLORS.muted;
-      const flow = this._flowState?.[key] || 0;
-      const active = flow !== 0;
+    return { svg, rect, wires };
+  }
 
-      wires.push({ key, d, color, flow, active, kind });
-    });
+  // Lightweight per-frame path refresh used by the physics loop.
+  _updateWireGeometry() {
+    const pack = this._collectWires();
+    if (!pack) return;
+    const { svg, rect, wires } = pack;
+    svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+    // If topology or flow-state mismatched the cached DOM, fall back to rebuild.
+    if (!this._wirePaths || this._wirePaths.size !== wires.length) {
+      this._drawConnections();
+      return;
+    }
+    for (const w of wires) {
+      const p = this._wirePaths.get(w.key);
+      if (!p) {
+        this._drawConnections();
+        return;
+      }
+      if (p._active !== w.active) {
+        // Flow state changed → rebuild to add/remove particle
+        this._drawConnections();
+        return;
+      }
+      if (p._d !== w.d) {
+        p.setAttribute("d", w.d);
+        p._d = w.d;
+      }
+    }
+  }
 
-    // Build SVG content in one shot
+  _drawConnections() {
+    const pack = this._collectWires();
+    if (!pack) return;
+    const { svg, rect, wires } = pack;
+    svg.setAttribute("viewBox", `0 0 ${rect.width} ${rect.height}`);
+    svg.removeAttribute("width");
+    svg.removeAttribute("height");
+
     const ns = "http://www.w3.org/2000/svg";
     svg.replaceChildren();
+    this._wirePaths = new Map();
 
     // Static background paths (always visible, muted)
     wires.forEach((w) => {
@@ -672,6 +1050,9 @@ class SolarChargeCard extends HTMLElement {
       base.setAttribute("stroke-linecap", "round");
       base.setAttribute("opacity", w.active ? "0.85" : "0.22");
       base.setAttribute("id", `wire-${w.key.replace(/[^\w-]/g, "_")}`);
+      base._d = w.d;
+      base._active = w.active;
+      this._wirePaths.set(w.key, base);
       svg.appendChild(base);
     });
 
@@ -720,11 +1101,12 @@ class SolarChargeCard extends HTMLElement {
     if (this._resizeObserver) this._resizeObserver.disconnect();
     const stage = this.shadowRoot.querySelector(".stage");
     if (!stage) return;
-    this._resizeObserver = new ResizeObserver(() => this._drawConnections());
+    this._resizeObserver = new ResizeObserver(() => {
+      this._recomputeRestPositions(true);
+      this._startSimLoop();
+    });
     this._resizeObserver.observe(stage);
     window.addEventListener("resize", this._onResize);
-    // Defer once to let layout settle
-    requestAnimationFrame(() => this._drawConnections());
   }
 
   // ------------------------------------------------------------------
@@ -828,7 +1210,8 @@ class SolarChargeCard extends HTMLElement {
         position: relative;
         width: 100%;
         flex: 3;
-        min-height: 260px;
+        min-height: 280px;
+        overflow: hidden;
       }
       .wires {
         position: absolute;
@@ -838,43 +1221,40 @@ class SolarChargeCard extends HTMLElement {
         pointer-events: none;
       }
       .nodes {
-        position: relative;
-        width: 100%;
-        height: 100%;
-        display: grid;
-        grid-template-rows: 1fr 1.2fr 1fr;
-        gap: 4px;
-        padding: 2px 4px;
-        box-sizing: border-box;
+        position: absolute;
+        inset: 0;
       }
-      .row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 8px;
-        min-width: 0;
+      .hint {
+        position: absolute;
+        right: 8px;
+        bottom: 4px;
+        font-size: 0.62rem;
+        letter-spacing: 0.02em;
+        opacity: 0.35;
+        pointer-events: none;
+        user-select: none;
       }
-      .row.top { justify-content: center; }
-      .row.middle { align-items: center; }
-      .row.bottom { align-items: flex-end; }
-      .spacer { flex: 1; }
-      .group {
-        display: flex;
-        gap: 10px;
-        align-items: flex-end;
-        flex-wrap: wrap;
-      }
-      .group.batteries { justify-content: flex-start; flex: 1; }
-      .group.chargers { justify-content: flex-end; flex: 1; }
 
       .node {
+        position: absolute;
+        left: 0;
+        top: 0;
         display: flex;
         flex-direction: column;
         align-items: center;
         gap: 4px;
         opacity: 0.78;
-        transition: opacity 260ms ease, transform 260ms ease;
-        flex-shrink: 0;
+        will-change: transform;
+        touch-action: none;
+        cursor: grab;
+        user-select: none;
+        transition: opacity 260ms ease, filter 200ms ease;
+      }
+      .node.pinned { cursor: default; }
+      .node.dragging {
+        cursor: grabbing;
+        z-index: 10;
+        filter: drop-shadow(0 10px 16px rgba(0,0,0,0.45));
       }
       .node.active { opacity: 1; }
       .circle {
