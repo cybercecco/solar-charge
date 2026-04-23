@@ -116,6 +116,18 @@ chargers:
 
 *Suggerimento*: le entità per-colonnina usano lo slug del nome che hai dato alla wallbox. Dopo aver configurato le colonnine, controlla in **Sviluppatore → Stati** per trovare gli ID esatti.
 
+### Convenzione del segno grid nella card
+
+La card assume la convenzione interna dell'integrazione: **Grid > 0 = import (rete → casa)**, **Grid < 0 = export (casa → rete)**. Se punti `grid_entity` al sensore normalizzato `sensor.solar_charge_grid_power` e hai configurato correttamente il flag *"Rete: export negativo"* nelle opzioni dell'integrazione, l'animazione andrà nel verso giusto.
+
+Se invece punti la card direttamente al contatore grezzo e non puoi riconfigurare l'integrazione, abilita il flag della card:
+
+```yaml
+type: custom:solar-charge-card
+grid_entity: sensor.mio_contatore_grid
+invert_grid: true  # abilita se il sensore è positivo quando esporti
+```
+
 ## Derivazione automatica dei dati mancanti
 
 L'integrazione applica a ogni ciclo il **bilancio energetico istantaneo**:

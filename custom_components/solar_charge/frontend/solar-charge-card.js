@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.9.0";
+const CARD_VERSION = "0.9.2";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -315,7 +315,11 @@ class SolarChargeCard extends HTMLElement {
     const c = this._config;
 
     const pv = Math.max(0, stateNum(this._hass, c.pv_entity));
-    const grid = stateNum(this._hass, c.grid_entity);
+    // invert_grid: flip the sign if the user's grid sensor is positive when exporting.
+    // Internal convention used by the animation: grid > 0 = importing (grid→home),
+    //                                           grid < 0 = exporting  (home→grid).
+    const gridRaw = stateNum(this._hass, c.grid_entity);
+    const grid = c.invert_grid ? -gridRaw : gridRaw;
     const house = Math.max(0, stateNum(this._hass, c.house_entity));
     const soc = stateNum(this._hass, c.battery_soc_entity);
 
@@ -898,6 +902,13 @@ class SolarChargeCardEditor extends HTMLElement {
       ["mode_entity", "Mode select entity"],
       ["boost_battery_entity", "Boost battery switch"],
     ];
+    const booleans = [
+      [
+        "invert_grid",
+        "Invert grid sign",
+        "Enable if your grid sensor is positive when exporting / negative when importing.",
+      ],
+    ];
     this.shadowRoot.innerHTML = `
       <style>
         .editor { display: flex; flex-direction: column; gap: 10px; padding: 8px 0; }
@@ -921,6 +932,18 @@ class SolarChargeCardEditor extends HTMLElement {
           </label>`
           )
           .join("")}
+        ${booleans
+          .map(
+            ([k, lbl, hint]) => `
+          <label style="flex-direction: row; align-items: center; gap: 8px;">
+            <input type="checkbox" data-key="${k}" data-type="bool" ${
+              this._config[k] ? "checked" : ""
+            } />
+            <span>${lbl}</span>
+          </label>
+          <div class="hint" style="margin-top:-6px;">${hint}</div>`
+          )
+          .join("")}
         <div class="hint">
           Lists (<code>chargers</code>, <code>batteries</code>) must be edited in YAML.
           Example:
@@ -942,10 +965,16 @@ batteries:
     this.shadowRoot.querySelectorAll("input[data-key]").forEach((inp) => {
       inp.addEventListener("change", (ev) => {
         const key = ev.target.dataset.key;
-        const value = ev.target.value;
+        const isBool = ev.target.dataset.type === "bool";
         const next = { ...this._config };
-        if (value === "") delete next[key];
-        else next[key] = value;
+        if (isBool) {
+          if (ev.target.checked) next[key] = true;
+          else delete next[key];
+        } else {
+          const value = ev.target.value;
+          if (value === "") delete next[key];
+          else next[key] = value;
+        }
         this._config = next;
         this.dispatchEvent(
           new CustomEvent("config-changed", { detail: { config: next } })
