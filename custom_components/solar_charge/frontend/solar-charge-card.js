@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.11.1";
+const CARD_VERSION = "0.11.2";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -1681,6 +1681,14 @@ class SolarChargeModeCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
     this._config = { ...config };
+    if (!this._config.mode_entity) {
+      this._config.mode_entity = "select.solar_charge_balancing_mode";
+      // eslint-disable-next-line no-console
+      console.info(
+        "[solar-charge-mode-card] mode_entity not set in YAML, defaulting to",
+        this._config.mode_entity
+      );
+    }
     this._mounted = false;
     try {
       if (this._hass) this._render();
@@ -1689,6 +1697,26 @@ class SolarChargeModeCard extends HTMLElement {
       console.error("[solar-charge-mode-card] render failed:", err);
       this._renderFallback();
     }
+  }
+
+  // Locate the select entity at click-time if the configured id doesn't
+  // exist. This is our last-line defense against users copy-pasting an
+  // outdated YAML (e.g. when the integration entry's slug ended up in the
+  // entity id as `select.solar_charge_<slug>_balancing_mode`).
+  _resolveModeEntity() {
+    const cfgId = this._config?.mode_entity;
+    const states = this._hass?.states || {};
+    if (cfgId && states[cfgId]) return cfgId;
+    // Prefer the integration's canonical id; otherwise any select whose
+    // id ends in `_balancing_mode` or simply contains `balancing_mode`.
+    const candidates = Object.keys(states).filter(
+      (id) =>
+        id.startsWith("select.") &&
+        (id === "select.solar_charge_balancing_mode" ||
+          id.endsWith("_balancing_mode") ||
+          id.includes("balancing_mode"))
+    );
+    return candidates[0] || cfgId || null;
   }
 
   set hass(hass) {
@@ -1758,7 +1786,8 @@ class SolarChargeModeCard extends HTMLElement {
 
   _update() {
     if (!this._mounted || !this._hass) return;
-    const current = stateStr(this._hass, this._config.mode_entity);
+    const entityId = this._resolveModeEntity();
+    const current = entityId ? stateStr(this._hass, entityId) : "";
     this.shadowRoot.querySelectorAll(".chip").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.value === current);
     });
@@ -1767,8 +1796,21 @@ class SolarChargeModeCard extends HTMLElement {
   async _onClick(ev) {
     const btn = ev.currentTarget;
     const value = btn.dataset.value;
-    const entityId = this._config?.mode_entity;
-    if (!this._hass || !entityId || !value) return;
+    if (!this._hass || !value) return;
+    const entityId = this._resolveModeEntity();
+    if (!entityId) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[solar-charge-mode-card] no select entity found for balancing mode. " +
+          "Set `mode_entity:` in the card YAML to the correct select.* id."
+      );
+      return;
+    }
+    // Optimistic visual feedback: highlight the chip immediately so the
+    // user gets a response even while the service round-trips (or fails).
+    this.shadowRoot.querySelectorAll(".chip").forEach((b) => {
+      b.classList.toggle("active", b === btn);
+    });
     try {
       await this._hass.callService("select", "select_option", {
         entity_id: entityId,
@@ -1776,7 +1818,15 @@ class SolarChargeModeCard extends HTMLElement {
       });
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("solar-charge-mode-card: service call failed", err);
+      console.error(
+        "[solar-charge-mode-card] select.select_option failed for",
+        entityId,
+        "option=",
+        value,
+        err
+      );
+      // Roll back optimistic highlight on failure
+      this._update();
     }
   }
 
