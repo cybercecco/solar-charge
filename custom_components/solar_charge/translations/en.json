@@ -70,12 +70,12 @@
         "data": {
           "house_power_entity": "Whole home power",
           "grid_power_entity": "Grid exchange power",
-          "grid_export_negative": "Negative values = export to grid"
+          "grid_export_negative": "Export to grid = negative values"
         },
         "data_description": {
           "house_power_entity": "Instantaneous (W) power of the whole house.",
           "grid_power_entity": "Power exchanged with the grid (W).",
-          "grid_export_negative": "Enable if your meter uses negative values on export."
+          "grid_export_negative": "ENABLED (default): negative = export/selling, positive = import/buying. DISABLE if your sensor is inverted, i.e. positive when exporting/selling and negative when importing/buying."
         }
       },
       "battery": {

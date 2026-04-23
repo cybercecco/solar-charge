@@ -70,12 +70,12 @@
         "data": {
           "house_power_entity": "Potenza consumata dalla casa",
           "grid_power_entity": "Potenza scambiata con la rete",
-          "grid_export_negative": "Valori negativi = export verso la rete"
+          "grid_export_negative": "Export verso la rete = valori negativi"
         },
         "data_description": {
           "house_power_entity": "Potenza istantanea (W) dell'intera abitazione.",
           "grid_power_entity": "Potenza scambiata con la rete (W).",
-          "grid_export_negative": "Abilita se il tuo contatore usa valori negativi in export."
+          "grid_export_negative": "ABILITATO (default): valori negativi = vendita/export, positivi = acquisto/import. DISABILITA se il tuo sensore è invertito, cioè positivo quando vendi e negativo quando compri."
         }
       },
       "battery": {
