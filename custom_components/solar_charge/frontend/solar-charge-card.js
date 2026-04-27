@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.0";
+const CARD_VERSION = "0.12.1";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -70,6 +70,55 @@ const ICONS = {
   charger:
     "M14 7V4H5v18h9v-3h1a3 3 0 003-3V10a3 3 0 00-3-3h-1zm2 4h1v4h-1v-4z",
 };
+
+// Synchronised across both cards (the graph card header and the dedicated
+// mode-selector card). Order matches the user-facing flow:
+//   Off → Eco → Balanced → Fast → Battery Fast → Manual
+// `value` MUST match the option exposed by `select.solar_charge_balancing_mode`
+// in the integration. `boost_battery` is the on-disk id of the "Battery Fast"
+// mode (kept for backward compatibility); `manual` is a soft state that tells
+// the EV controller to step back and let the user drive the chargers.
+//
+// Kept at the very top of the file so it is fully initialised before any
+// class declaration that references it (no temporal-dead-zone surprises).
+const MODE_BUTTONS = [
+  {
+    value: "off",
+    label: "Off",
+    color: "#9aa0a6",
+    icon: "M13 3h-2v10h2V3zM6.76 5.51l-1.42 1.42A7 7 0 0 0 12 19a7 7 0 0 0 6.66-12.07l-1.42-1.42A5 5 0 1 1 7 7a5 5 0 0 1-.24-1.49z",
+  },
+  {
+    value: "eco",
+    label: "Eco",
+    color: "#66BB6A",
+    icon: "M17 3c-6 0-10 4-10 10 0 3 1 5 2 6l-2 2 1 1 2-2c1 1 3 2 6 2 6 0 10-4 10-10 0-5-4-9-9-9zm-1 4c-3 1-6 3-7 7-1-3 1-6 5-7h2z",
+  },
+  {
+    value: "balanced",
+    label: "Bilanciato",
+    color: "#42A5F5",
+    icon: "M12 3a1 1 0 0 1 1 1v1h5a1 1 0 1 1 0 2h-1.1l2.6 6.2a3 3 0 0 1-5.8 1H13v7h4v2H7v-2h4v-7h-1.7a3 3 0 0 1-5.8-1L6.1 7H5a1 1 0 0 1 0-2h5V4a1 1 0 0 1 1-1zm5 5.4L15.3 13h3.4L17 8.4zM7 8.4L5.3 13h3.4L7 8.4z",
+  },
+  {
+    value: "fast",
+    label: "Fast",
+    color: "#FFB300",
+    icon: "M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z",
+  },
+  {
+    value: "boost_battery",
+    label: "Battery Fast",
+    color: "#EC407A",
+    icon: "M9 4h6v2h2v16H7V6h2V4zm2 5l-2 5h2v4l3-5h-2l1-4h-2z",
+  },
+  {
+    value: "manual",
+    label: "Manuale",
+    color: "#B388FF",
+    icon: "M9 11V5a1 1 0 0 1 2 0v6h1V3a1 1 0 0 1 2 0v8h1V4a1 1 0 0 1 2 0v9h1V7a1 1 0 0 1 2 0v9a5 5 0 0 1-5 5h-2.2a4 4 0 0 1-3.4-1.9l-3.7-6.2a1 1 0 0 1 1.5-1.3l1.8 1.7V11a1 1 0 1 1 2 0z",
+  },
+];
 
 const stateObj = (hass, id) => (id && hass ? hass.states[id] : undefined);
 
@@ -294,7 +343,11 @@ class SolarChargeCard extends HTMLElement {
     this._config = { ...config };
     this._mounted = false;
     try {
-      if (this._hass) this._render();
+      // Render even when hass is not yet available: the dashboard card
+      // picker may call setConfig BEFORE handing us the hass object, and
+      // an empty shadow root would make the tile look stuck on loading.
+      // The graph will repopulate as soon as `set hass` arrives.
+      this._render();
     } catch (err) {
       // Never let setConfig throw up to Lovelace: the picker tile would
       // otherwise spin forever with no rendered output. Fall back to a
@@ -380,11 +433,31 @@ class SolarChargeCard extends HTMLElement {
     `;
 
     this._mounted = true;
-    this._bindActions();
-    this._initSimulationFromDescriptors(descriptors);
-    this._bindDragHandlers();
-    this._observeResize();
-    this._update();
+    // Each step is independently guarded so a failure in any of them
+    // never prevents the next one from running. The picker tile in
+    // particular has very tight initial dimensions and timing, and we
+    // can't afford to bail out of the whole render path on a transient
+    // layout glitch.
+    try { this._bindActions(); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] _bindActions failed:", e);
+    }
+    try { this._initSimulationFromDescriptors(descriptors); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] _initSimulationFromDescriptors failed:", e);
+    }
+    try { this._bindDragHandlers(); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] _bindDragHandlers failed:", e);
+    }
+    try { this._observeResize(); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] _observeResize failed:", e);
+    }
+    try { this._update(); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] _update failed:", e);
+    }
   }
 
   // Flat list of every balloon we want on the stage. Order doesn't matter
@@ -1645,53 +1718,6 @@ if (!customElements.get("solar-charge-card-editor")) {
 // up; tapping any other one calls `select.select_option`. Icons are
 // inline SVG paths so there's no dependency on Material icons.
 // ---------------------------------------------------------------------------
-// Synchronised across both cards (the graph card header and the dedicated
-// mode-selector card). Order matches the user-facing flow:
-//   Off → Eco → Balanced → Fast → Battery Fast → Manual
-// `value` MUST match the option exposed by `select.solar_charge_balancing_mode`
-// in the integration. `boost_battery` is the on-disk id of the "Battery Fast"
-// mode (kept for backward compatibility); `manual` is a soft state that tells
-// the EV controller to step back and let the user drive the chargers.
-const MODE_BUTTONS = [
-  {
-    value: "off",
-    label: "Off",
-    color: "#9aa0a6",
-    icon: "M13 3h-2v10h2V3zM6.76 5.51l-1.42 1.42A7 7 0 0 0 12 19a7 7 0 0 0 6.66-12.07l-1.42-1.42A5 5 0 1 1 7 7a5 5 0 0 1-.24-1.49z",
-  },
-  {
-    value: "eco",
-    label: "Eco",
-    color: "#66BB6A",
-    icon: "M17 3c-6 0-10 4-10 10 0 3 1 5 2 6l-2 2 1 1 2-2c1 1 3 2 6 2 6 0 10-4 10-10 0-5-4-9-9-9zm-1 4c-3 1-6 3-7 7-1-3 1-6 5-7h2z",
-  },
-  {
-    value: "balanced",
-    label: "Bilanciato",
-    color: "#42A5F5",
-    icon: "M12 3a1 1 0 0 1 1 1v1h5a1 1 0 1 1 0 2h-1.1l2.6 6.2a3 3 0 0 1-5.8 1H13v7h4v2H7v-2h4v-7h-1.7a3 3 0 0 1-5.8-1L6.1 7H5a1 1 0 0 1 0-2h5V4a1 1 0 0 1 1-1zm5 5.4L15.3 13h3.4L17 8.4zM7 8.4L5.3 13h3.4L7 8.4z",
-  },
-  {
-    value: "fast",
-    label: "Fast",
-    color: "#FFB300",
-    icon: "M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z",
-  },
-  {
-    value: "boost_battery",
-    label: "Battery Fast",
-    color: "#EC407A",
-    icon: "M9 4h6v2h2v16H7V6h2V4zm2 5l-2 5h2v4l3-5h-2l1-4h-2z",
-  },
-  {
-    value: "manual",
-    label: "Manuale",
-    color: "#B388FF",
-    // Hand cursor to communicate "user takes over"
-    icon: "M9 11V5a1 1 0 0 1 2 0v6h1V3a1 1 0 0 1 2 0v8h1V4a1 1 0 0 1 2 0v9h1V7a1 1 0 0 1 2 0v9a5 5 0 0 1-5 5h-2.2a4 4 0 0 1-3.4-1.9l-3.7-6.2a1 1 0 0 1 1.5-1.3l1.8 1.7V11a1 1 0 1 1 2 0z",
-  },
-];
-
 class SolarChargeModeCard extends HTMLElement {
   constructor() {
     super();
@@ -1739,7 +1765,8 @@ class SolarChargeModeCard extends HTMLElement {
     }
     this._mounted = false;
     try {
-      if (this._hass) this._render();
+      // Render even without hass: the picker tile must paint immediately.
+      this._render();
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[solar-charge-mode-card] render failed:", err);
