@@ -453,17 +453,20 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
 
         - off          → all chargers go to 0 W. PV that's not consumed by the
                          house can still flow into the home battery.
-        - eco          → only PV surplus relative to the house load is offered
-                         to the EV (`pv − base_house`). Battery competes
-                         neutrally for whatever the EV doesn't take.
+        - eco          → battery first: PV is reserved for the home battery
+                         until it reaches `battery_target_soc` (default 90 %),
+                         then all the PV surplus flows to the EV. The
+                         "slow but green" preset for users who want the home
+                         battery topped up before charging the car.
         - balanced     → EV receives the SAME power that goes to the home
-                         battery, paid only by PV.
+                         battery, paid only by PV (so the two charge
+                         simultaneously, splitting the surplus 50/50).
         - fast         → all the available PV plus up to `fast_grid_budget_w`
                          from the grid (default 3 kW). The home battery
                          doesn't get anything in this mode.
-        - battery_fast → all available PV is reserved for the home battery
-                         until it reaches `battery_fast_soc` (default 98 %).
-                         Beyond that threshold the EV gets the PV surplus.
+        - battery_fast → like eco but with the stricter `battery_fast_soc`
+                         threshold (default 98 %): the EV is locked out
+                         until the battery is essentially full.
         - manual       → the integration steps back: chargers keep their
                          user-driven values, recommended_power = 0. The
                          EV controller reads `snap.manual` and skips writes.
@@ -518,13 +521,18 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
             # the home battery.
             batt_target = min(batt_max, max(0.0, available))
         elif mode == MODE_ECO:
-            # Only the PV surplus relative to the house base load. The home
-            # battery is treated as a neutral competitor: it grabs whatever
-            # the EV does not take.
-            ev_candidate = max(0.0, available)
-            if ev_candidate >= self.min_pv_surplus + ev_min_first:
-                ev_total = min(ev_max_total, ev_candidate)
-            batt_target = min(batt_max, max(0.0, available - ev_total))
+            # Battery first: lock the EV out until SOC reaches the target,
+            # then route all surplus PV to the EV.
+            if soc < self.battery_target_soc:
+                batt_target = min(batt_max, max(0.0, available))
+                # ev_total stays 0 by initialization
+            else:
+                ev_candidate = max(0.0, available)
+                if ev_candidate >= ev_min_first:
+                    ev_total = min(ev_max_total, ev_candidate)
+                # Whatever the EV could not absorb (rare, e.g. throttled
+                # by min current) goes back to the battery if it can take it.
+                batt_target = min(batt_max, max(0.0, available - ev_total))
         elif mode == MODE_BALANCED:
             # EV power = battery charging power, both paid only by PV.
             # Split the available surplus 50/50, then make EV match the
@@ -547,15 +555,21 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
                 ev_total = min(ev_max_total, ev_candidate)
             batt_target = 0.0
         elif mode == MODE_BATTERY_FAST:
-            # Battery first, EV only when SOC has reached battery_fast_soc.
+            # Battery first up to the strict `battery_fast_soc` threshold,
+            # then EV. We override the standard `batt_max` here because
+            # the global `battery_target_soc` would otherwise stop the
+            # battery from charging past the (lower) target — leaving a
+            # dead band in which neither the battery nor the EV would
+            # consume PV. With the override the battery happily charges
+            # up to `battery_fast_soc`, after which the EV gets the floor.
             if soc < self.battery_fast_soc:
-                batt_target = min(batt_max, max(0.0, available))
-                # No surplus is re-routed to the EV until the battery is full.
+                batt_max_strict = float(self.battery_max_charge_w)
+                batt_target = min(batt_max_strict, max(0.0, available))
+                # ev_total stays 0
             else:
                 ev_candidate = max(0.0, available)
                 if ev_candidate >= ev_min_first:
                     ev_total = min(ev_max_total, ev_candidate)
-                # Battery is at/above target: leftover (rare) feeds it back.
                 batt_target = min(batt_max, max(0.0, available - ev_total))
         elif mode == MODE_BOOST_CAR:
             # Legacy mode: similar to FAST but without the grid budget.

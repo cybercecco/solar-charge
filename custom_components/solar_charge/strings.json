@@ -199,10 +199,10 @@
     "mode": {
       "options": {
         "off": "Spenta",
-        "eco": "Eco — solo surplus solare",
-        "balanced": "Bilanciato (EV = batteria)",
+        "eco": "Eco — batteria prima, poi EV",
+        "balanced": "Bilanciato (EV = batteria, in parallelo)",
         "fast": "Fast (PV + rete)",
-        "boost_battery": "Battery Fast (batteria prima)",
+        "boost_battery": "Battery Fast (batteria piena al 98%)",
         "manual": "Manuale (bypass)",
         "boost_car": "Boost auto (legacy)"
       }

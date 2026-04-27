@@ -184,10 +184,10 @@
     "mode": {
       "options": {
         "off": "Off",
-        "eco": "Eco — solar surplus only",
-        "balanced": "Balanced (EV = battery)",
+        "eco": "Eco — battery first, then EV",
+        "balanced": "Balanced (EV = battery, in parallel)",
         "fast": "Fast (PV + grid)",
-        "boost_battery": "Battery Fast (battery first)",
+        "boost_battery": "Battery Fast (battery full at 98%)",
         "manual": "Manual (bypass)",
         "boost_car": "Boost car (legacy)"
       }

@@ -14,10 +14,10 @@ Integrazione **custom per Home Assistant** (2024.4+) per bilanciare in tempo rea
   | Modalità | Cosa fa |
   |---|---|
   | **off** | Colonnina spenta. PV in eccesso continua a caricare la batteria di casa. |
-  | **eco** | EV riceve **solo** il surplus PV rispetto al consumo casalingo. |
-  | **balanced** | EV riceve la **stessa potenza** che va alla batteria di casa, solo da PV. |
+  | **eco** | Prima la batteria: tutto il PV alla batteria di casa, poi (al raggiungimento di `battery_target_soc`, default **90%**) tutto il PV alla colonnina. |
+  | **balanced** | EV e batteria caricano **in parallelo**: il surplus PV è diviso a metà fra loro (l'EV riceve la stessa potenza che riceve la batteria). |
   | **fast** | EV riceve **tutto il PV** disponibile + un budget configurabile dalla rete (default **3 kW**). |
-  | **battery_fast** | PV viene **prima** dirottato alla batteria; l'EV riceve PV solo al raggiungimento del SOC configurato (default **98 %**). |
+  | **battery_fast** | Come `eco` ma con soglia più alta (`battery_fast_soc`, default **98%**): l'EV resta a 0 fino a quando la batteria non è sostanzialmente piena. |
   | **manual** | L'integrazione **bypassa** i comandi della colonnina: l'utente regola corrente/potenza a mano. Uscendo da manuale, il controllo torna **immediato** (nessuna isteresi). |
 
   Configurabili in **Parametri di bilanciamento**: cap massimo casa, **tolleranza di pre-allarme (default 10%)**, budget grid in Fast, SOC della Battery Fast.

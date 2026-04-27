@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.3";
+const CARD_VERSION = "0.12.4";
 
 // eslint-disable-next-line no-console
 console.info(
