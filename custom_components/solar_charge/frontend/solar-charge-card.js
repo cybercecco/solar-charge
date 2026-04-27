@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.1";
+const CARD_VERSION = "0.12.2";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -359,11 +359,18 @@ class SolarChargeCard extends HTMLElement {
   }
 
   set hass(hass) {
-    const firstRun = !this._hass;
     this._hass = hass;
     try {
-      if (!this._mounted) this._render();
-      else if (!firstRun) this._update();
+      if (!this._mounted) {
+        // First mount also runs an _update at the end of _render.
+        this._render();
+      } else {
+        // Always run _update when hass changes (including the first
+        // assignment after a setConfig-only render). Without this the
+        // mode chips would stay un-highlighted until the next live
+        // state change rolled in.
+        this._update();
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[solar-charge-card] update failed, using fallback:", err);
@@ -1795,11 +1802,17 @@ class SolarChargeModeCard extends HTMLElement {
   }
 
   set hass(hass) {
-    const first = !this._hass;
     this._hass = hass;
     try {
-      if (!this._mounted) this._render();
-      else if (!first) this._update();
+      if (!this._mounted) {
+        this._render();
+      } else {
+        // Always re-evaluate which chip should be highlighted whenever
+        // hass changes, including the very first assignment that comes
+        // after a setConfig-only render (when _mounted was already true
+        // but no hass was available yet to drive _update).
+        this._update();
+      }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("[solar-charge-mode-card] update failed:", err);
