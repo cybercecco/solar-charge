@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.2";
+const CARD_VERSION = "0.12.3";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -146,6 +146,132 @@ const fmtPercent = (v) => {
   return `${Math.round(v)} %`;
 };
 
+// ---------------------------------------------------------------------------
+// Auto-detect a card configuration from the running Solar Charge integration.
+// Walks `hass.entities` for entries with `platform === "solar_charge"`,
+// groups them by device, and produces a `{ pv_entity, house_entity, ...,
+// chargers: [...], batteries: [...] }` object that mirrors the YAML.
+// Used both by `getStubConfig` (when adding the card from the picker) and
+// at runtime, so a manually-written YAML stub like `type: custom:solar-charge-card`
+// gets fully populated as soon as `hass` lands.
+// Returns `null` when no Solar Charge entities can be found.
+// ---------------------------------------------------------------------------
+function autoConfigFromHass(hass) {
+  try {
+    const registry = hass?.entities || {};
+    const devices = hass?.devices || {};
+    const scEntries = Object.values(registry).filter(
+      (e) => e && e.platform === "solar_charge"
+    );
+    if (!scEntries.length) return null;
+
+    const byDevice = new Map();
+    for (const e of scEntries) {
+      if (!e.device_id) continue;
+      if (!byDevice.has(e.device_id)) byDevice.set(e.device_id, []);
+      byDevice.get(e.device_id).push(e);
+    }
+
+    const findByKey = (ents, suffix) => {
+      const hit = ents.find((e) =>
+        (e.unique_id || "").endsWith(`_${suffix}`)
+      );
+      return hit ? hit.entity_id : undefined;
+    };
+    const prettyName = (dev, fallbackName) => {
+      const raw = dev?.name_by_user || dev?.name || fallbackName || "";
+      const parts = raw.split("—");
+      return (parts[parts.length - 1] || raw).trim();
+    };
+    const extractKind = (dev) => {
+      const ids = dev?.identifiers || [];
+      for (const pair of ids) {
+        if (!Array.isArray(pair) || pair[0] !== "solar_charge") continue;
+        const raw = String(pair[1] || "");
+        const ci = raw.indexOf("_charger_");
+        if (ci !== -1) return { kind: "charger", id: raw.slice(ci + 9) };
+        const bi = raw.indexOf("_battery_");
+        if (bi !== -1) return { kind: "battery", id: raw.slice(bi + 9) };
+        return { kind: "main", id: raw };
+      }
+      return null;
+    };
+
+    let mainEnts = null;
+    const chargerGroups = [];
+    const batteryGroups = [];
+    for (const [did, ents] of byDevice) {
+      const dev = devices[did];
+      const info = extractKind(dev);
+      if (!info) continue;
+      if (info.kind === "main") mainEnts = ents;
+      else if (info.kind === "charger")
+        chargerGroups.push({ cid: info.id, dev, ents });
+      else if (info.kind === "battery")
+        batteryGroups.push({ bid: info.id, dev, ents });
+    }
+
+    const cfg = {};
+    if (mainEnts) {
+      const globalMap = {
+        pv_entity: "pv_power",
+        house_entity: "house_power",
+        grid_entity: "grid_power",
+        battery_entity: "battery_power",
+        battery_soc_entity: "battery_soc",
+        ev_recommended_entity: "recommended_ev_power_total",
+        mode_entity: "mode",
+        boost_battery_entity: "boost_battery",
+      };
+      for (const [key, suffix] of Object.entries(globalMap)) {
+        const found = findByKey(mainEnts, suffix);
+        if (found) cfg[key] = found;
+      }
+    }
+    if (chargerGroups.length) {
+      cfg.chargers = chargerGroups
+        .map(({ cid, dev, ents }) => {
+          const c = {
+            name: prettyName(dev, cid),
+            power_entity: findByKey(ents, "power"),
+            recommended_power_entity: findByKey(ents, "recommended_power"),
+          };
+          const recCurr = findByKey(ents, "recommended_current");
+          if (recCurr) c.recommended_current_entity = recCurr;
+          const charging = findByKey(ents, "charging");
+          if (charging) c.charging_entity = charging;
+          const boost = findByKey(ents, "boost");
+          if (boost) c.boost_entity = boost;
+          return c;
+        })
+        .filter((c) => c.power_entity);
+    }
+    if (batteryGroups.length) {
+      cfg.batteries = batteryGroups
+        .map(({ bid, dev, ents }) => {
+          const b = {
+            id: bid,
+            name: prettyName(dev, bid),
+            power_entity: findByKey(ents, "power"),
+          };
+          const soc = findByKey(ents, "soc");
+          if (soc) b.soc_entity = soc;
+          return b;
+        })
+        .filter((b) => b.power_entity);
+    }
+
+    if (!mainEnts && !(cfg.chargers || []).length && !(cfg.batteries || []).length) {
+      return null;
+    }
+    return cfg;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn("[solar-charge-card] autoConfigFromHass failed:", err);
+    return null;
+  }
+}
+
 // Build a smooth cubic-bezier path between two points. Control points are
 // offset along the dominant axis to produce an elegant S-curve.
 const curvePath = (x1, y1, x2, y2) => {
@@ -217,121 +343,70 @@ class SolarChargeCard extends HTMLElement {
       boost_battery_entity: "switch.solar_charge_boost_battery",
       chargers: [],
     };
-    try {
-      const registry = hass?.entities || {};
-      const devices = hass?.devices || {};
-      const scEntries = Object.values(registry).filter(
-        (e) => e && e.platform === "solar_charge"
-      );
-      if (!scEntries.length) return fallback;
+    const detected = autoConfigFromHass(hass);
+    if (!detected) return fallback;
+    return { title: "Solar Charge", ...detected };
+  }
 
-      // Group entities by their device_id, and each device by its
-      // solar_charge identifier (entry_id / entry_id_charger_X / entry_id_battery_X).
-      const byDevice = new Map();
-      for (const e of scEntries) {
-        if (!e.device_id) continue;
-        if (!byDevice.has(e.device_id)) byDevice.set(e.device_id, []);
-        byDevice.get(e.device_id).push(e);
-      }
+  // Merge any auto-detected entities into the user-supplied config without
+  // overwriting fields the user explicitly set. Returns true when at least
+  // one new field landed (so the caller knows it should re-render).
+  // This is what lets a minimal YAML stub like
+  //   type: custom:solar-charge-card
+  // turn into a fully populated card the moment hass arrives, mirroring
+  // whatever the integration is exposing under Devices & Services.
+  _enrichConfigFromHass() {
+    if (!this._hass || !this._config || this._enriched) return false;
+    const detected = autoConfigFromHass(this._hass);
+    if (!detected) return false;
+    const target = { ...this._config };
+    let changed = false;
 
-      const findByKey = (ents, suffix) => {
-        const hit = ents.find((e) =>
-          (e.unique_id || "").endsWith(`_${suffix}`)
-        );
-        return hit ? hit.entity_id : undefined;
-      };
-      const prettyName = (dev, fallbackName) => {
-        const raw = dev?.name_by_user || dev?.name || fallbackName || "";
-        // charger/battery sub-devices are named "<entry title> — <slug>"
-        const parts = raw.split("—");
-        return (parts[parts.length - 1] || raw).trim();
-      };
-      const extractKind = (dev) => {
-        const ids = dev?.identifiers || [];
-        for (const pair of ids) {
-          if (!Array.isArray(pair) || pair[0] !== "solar_charge") continue;
-          const raw = String(pair[1] || "");
-          const ci = raw.indexOf("_charger_");
-          if (ci !== -1) return { kind: "charger", id: raw.slice(ci + 9) };
-          const bi = raw.indexOf("_battery_");
-          if (bi !== -1) return { kind: "battery", id: raw.slice(bi + 9) };
-          return { kind: "main", id: raw };
-        }
-        return null;
-      };
-
-      let mainEnts = null;
-      const chargerGroups = [];
-      const batteryGroups = [];
-      for (const [did, ents] of byDevice) {
-        const dev = devices[did];
-        const info = extractKind(dev);
-        if (!info) continue;
-        if (info.kind === "main") mainEnts = ents;
-        else if (info.kind === "charger")
-          chargerGroups.push({ cid: info.id, dev, ents });
-        else if (info.kind === "battery")
-          batteryGroups.push({ bid: info.id, dev, ents });
+    const SCALAR_KEYS = [
+      "pv_entity",
+      "house_entity",
+      "grid_entity",
+      "battery_entity",
+      "battery_soc_entity",
+      "ev_entity",
+      "ev_recommended_entity",
+      "mode_entity",
+      "boost_battery_entity",
+    ];
+    for (const k of SCALAR_KEYS) {
+      if (!target[k] && detected[k]) {
+        target[k] = detected[k];
+        changed = true;
       }
-
-      const cfg = { title: "Solar Charge" };
-      if (mainEnts) {
-        const globalMap = {
-          pv_entity: "pv_power",
-          house_entity: "house_power",
-          grid_entity: "grid_power",
-          battery_entity: "battery_power",
-          battery_soc_entity: "battery_soc",
-          ev_recommended_entity: "recommended_ev_power_total",
-          mode_entity: "mode",
-          boost_battery_entity: "boost_battery",
-        };
-        for (const [key, suffix] of Object.entries(globalMap)) {
-          const found = findByKey(mainEnts, suffix);
-          if (found) cfg[key] = found;
-        }
-      }
-      if (chargerGroups.length) {
-        cfg.chargers = chargerGroups
-          .map(({ cid, dev, ents }) => {
-            const c = {
-              name: prettyName(dev, cid),
-              power_entity: findByKey(ents, "power"),
-              recommended_power_entity: findByKey(ents, "recommended_power"),
-            };
-            const recCurr = findByKey(ents, "recommended_current");
-            if (recCurr) c.recommended_current_entity = recCurr;
-            const charging = findByKey(ents, "charging");
-            if (charging) c.charging_entity = charging;
-            const boost = findByKey(ents, "boost");
-            if (boost) c.boost_entity = boost;
-            return c;
-          })
-          .filter((c) => c.power_entity);
-      }
-      if (batteryGroups.length) {
-        cfg.batteries = batteryGroups
-          .map(({ bid, dev, ents }) => {
-            const b = {
-              id: bid,
-              name: prettyName(dev, bid),
-              power_entity: findByKey(ents, "power"),
-            };
-            const soc = findByKey(ents, "soc");
-            if (soc) b.soc_entity = soc;
-            return b;
-          })
-          .filter((b) => b.power_entity);
-      }
-
-      if (!mainEnts && !(cfg.chargers || []).length && !(cfg.batteries || []).length) {
-        return fallback;
-      }
-      return cfg;
-    } catch (err) {
-      console.warn("[solar-charge-card] getStubConfig fallback:", err);
-      return fallback;
     }
+    if (
+      Array.isArray(detected.chargers) &&
+      detected.chargers.length &&
+      !(Array.isArray(target.chargers) && target.chargers.length)
+    ) {
+      target.chargers = detected.chargers;
+      changed = true;
+    }
+    if (
+      Array.isArray(detected.batteries) &&
+      detected.batteries.length &&
+      !(Array.isArray(target.batteries) && target.batteries.length)
+    ) {
+      target.batteries = detected.batteries;
+      changed = true;
+    }
+    // Mark as enriched even when unchanged so we don't keep re-evaluating
+    // the registry on every hass tick. A subsequent setConfig (e.g. user
+    // edited the YAML) resets the flag.
+    this._enriched = true;
+    if (changed) {
+      this._config = target;
+      // eslint-disable-next-line no-console
+      console.info(
+        "[solar-charge-card] auto-enriched config from running integration"
+      );
+    }
+    return changed;
   }
 
   getCardSize() {
@@ -342,7 +417,13 @@ class SolarChargeCard extends HTMLElement {
     if (!config) throw new Error("Invalid configuration");
     this._config = { ...config };
     this._mounted = false;
+    // Re-enable runtime enrichment: the user edited the YAML, give us a
+    // fresh chance to fill in the gaps from the integration registry.
+    this._enriched = false;
     try {
+      // If hass is already available, top up the config with any entity
+      // the user did not specify before doing the first paint.
+      if (this._hass) this._enrichConfigFromHass();
       // Render even when hass is not yet available: the dashboard card
       // picker may call setConfig BEFORE handing us the hass object, and
       // an empty shadow root would make the tile look stuck on loading.
@@ -361,8 +442,12 @@ class SolarChargeCard extends HTMLElement {
   set hass(hass) {
     this._hass = hass;
     try {
-      if (!this._mounted) {
-        // First mount also runs an _update at the end of _render.
+      // First time hass arrives: try to auto-fill any entity the user
+      // didn't provide in the YAML. If anything new lands we MUST do a
+      // full re-render (descriptors and DOM nodes change), otherwise a
+      // simple _update is enough.
+      const enriched = this._enrichConfigFromHass();
+      if (!this._mounted || enriched) {
         this._render();
       } else {
         // Always run _update when hass changes (including the first
