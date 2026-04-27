@@ -152,10 +152,16 @@
           "hysteresis_w": "Hysteresis",
           "overconsumption_threshold_w": "Over-consumption threshold",
           "max_household_power_w": "Max household power cap (0 = disabled)",
+          "max_household_tolerance_pct": "Cap tolerance (%)",
+          "fast_grid_budget_w": "Fast mode: grid budget (W)",
+          "battery_fast_soc": "Battery Fast: minimum battery SOC for EV (%)",
           "update_interval": "Recompute interval"
         },
         "data_description": {
-          "charger_distribution": "How to split the total EV power between chargers."
+          "charger_distribution": "How to split the total EV power between chargers.",
+          "max_household_tolerance_pct": "Pre-alarm: warn when total load exceeds (1 − tolerance) × cap. Default 10% → warning at 90% of cap, alarm at 100%.",
+          "fast_grid_budget_w": "Maximum grid power Fast mode is allowed to import on top of PV. Default 3000 W.",
+          "battery_fast_soc": "In Battery Fast mode the EV gets PV only after the home battery has reached this SOC. Default 98%."
         }
       },
       "notifications": {
@@ -177,12 +183,13 @@
   "selector": {
     "mode": {
       "options": {
+        "off": "Off",
         "eco": "Eco — solar surplus only",
-        "balanced": "Balanced",
-        "boost_car": "Boost car",
-        "boost_battery": "Boost battery",
-        "fast": "Fast charge",
-        "off": "Off"
+        "balanced": "Balanced (EV = battery)",
+        "fast": "Fast (PV + grid)",
+        "boost_battery": "Battery Fast (battery first)",
+        "manual": "Manual (bypass)",
+        "boost_car": "Boost car (legacy)"
       }
     },
     "distribution": {
@@ -232,12 +239,13 @@
       "mode": {
         "name": "Balancing mode",
         "state": {
+          "off": "Off",
           "eco": "Eco",
           "balanced": "Balanced",
-          "boost_car": "Boost car",
-          "boost_battery": "Boost battery",
           "fast": "Fast",
-          "off": "Off"
+          "boost_battery": "Battery Fast",
+          "manual": "Manual",
+          "boost_car": "Boost car"
         }
       },
       "distribution": {

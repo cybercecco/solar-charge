@@ -75,6 +75,16 @@ CONF_OVERCONSUMPTION_THRESHOLD_W: Final = "overconsumption_threshold_w"
 # allocation so that `house_non_ev + ev_total <= cap`, regardless of boost
 # or mode. 0 disables the cap.
 CONF_MAX_HOUSEHOLD_POWER_W: Final = "max_household_power_w"
+# Tolerance (% of the cap) used to emit an "approaching cap" warning before
+# the hard limit is hit. E.g. 10% means: warn at >= 90% of cap, alarm at >= 100%.
+CONF_MAX_HOUSEHOLD_TOLERANCE_PCT: Final = "max_household_tolerance_pct"
+# In FAST mode: maximum amount of grid power (W) we are willing to *import*
+# in addition to PV in order to feed the EV charger. When 0 the FAST mode
+# behaves identically to "use all PV but do not buy from the grid".
+CONF_FAST_GRID_BUDGET_W: Final = "fast_grid_budget_w"
+# In BATTERY-FAST mode: SOC % the home battery must reach before any of the
+# PV surplus is allowed to flow into the EV charger.
+CONF_BATTERY_FAST_SOC: Final = "battery_fast_soc"
 CONF_MIN_PV_SURPLUS_W: Final = "min_pv_surplus_w"
 CONF_HYSTERESIS_W: Final = "hysteresis_w"
 CONF_UPDATE_INTERVAL: Final = "update_interval"
@@ -101,20 +111,46 @@ DEFAULT_HYSTERESIS_W: Final = 150
 DEFAULT_MIN_PV_SURPLUS_W: Final = 300
 DEFAULT_OVERCONSUMPTION_W: Final = 6000
 DEFAULT_MAX_HOUSEHOLD_POWER_W: Final = 0  # 0 = no cap
+DEFAULT_MAX_HOUSEHOLD_TOLERANCE_PCT: Final = 10
+DEFAULT_FAST_GRID_BUDGET_W: Final = 3000  # +3 kW from grid in FAST mode
+DEFAULT_BATTERY_FAST_SOC: Final = 98      # battery must hit 98% before EV gets PV
 DEFAULT_UPDATE_INTERVAL: Final = 10  # seconds
 DEFAULT_CHARGER_DISTRIBUTION: Final = "priority"
 
 # ---------------------------------------------------------------------------
 # Priority / operating modes
 # ---------------------------------------------------------------------------
+MODE_OFF: Final = "off"
 MODE_ECO: Final = "eco"
 MODE_BALANCED: Final = "balanced"
-MODE_BOOST_CAR: Final = "boost_car"
-MODE_BOOST_BATTERY: Final = "boost_battery"
 MODE_FAST: Final = "fast"
-MODE_OFF: Final = "off"
+# Battery-first: PV is reserved for the home battery; the EV charger only
+# receives PV once the battery reaches `battery_fast_soc`. Internally the
+# id is `boost_battery` for backward compat with existing config entries.
+MODE_BATTERY_FAST: Final = "boost_battery"
+# Manual: the integration stops driving the chargers; the user can change
+# their set_current/set_power/switch entities by hand. Switching out of
+# manual reapplies the new mode immediately (no hysteresis hold).
+MODE_MANUAL: Final = "manual"
 
-MODES: Final = [MODE_ECO, MODE_BALANCED, MODE_BOOST_CAR, MODE_BOOST_BATTERY, MODE_FAST, MODE_OFF]
+# Legacy alias kept for backward compatibility (selectable via the service
+# `solar_charge.set_mode` and existing automations) but hidden from cards.
+MODE_BOOST_CAR: Final = "boost_car"
+
+# Legacy name preserved for callers that import `MODE_BOOST_BATTERY`
+# (switch.py, services). The selected behaviour is the new "Battery Fast".
+MODE_BOOST_BATTERY: Final = MODE_BATTERY_FAST
+
+MODES: Final = [
+    MODE_OFF,
+    MODE_ECO,
+    MODE_BALANCED,
+    MODE_FAST,
+    MODE_BATTERY_FAST,
+    MODE_MANUAL,
+    # Legacy values still accepted by the select entity
+    MODE_BOOST_CAR,
+]
 
 DISTRIBUTIONS: Final = ["priority", "equal", "roundrobin"]
 

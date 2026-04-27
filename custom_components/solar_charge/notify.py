@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from .const import (
+    CONF_MAX_HOUSEHOLD_POWER_W,
     CONF_NOTIFY_ON_CHARGE_COMPLETE,
     CONF_NOTIFY_ON_MODE_CHANGE,
     CONF_NOTIFY_ON_OVERCONSUMPTION,
@@ -25,6 +26,7 @@ from .coordinator import FlowSnapshot, SolarChargeCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 _OVERCONSUMPTION_COOLDOWN = timedelta(minutes=5)
+_CAP_COOLDOWN = timedelta(minutes=2)
 
 
 class NotificationDispatcher:
@@ -40,6 +42,8 @@ class NotificationDispatcher:
         self._cfg: dict[str, Any] = {**entry.data, **(entry.options or {})}
         self._unsub = None
         self._last_overconsumption = None
+        self._last_cap_warning = None
+        self._last_cap_alarm = None
         self._last_mode = coordinator.mode
 
     @callback
@@ -74,9 +78,13 @@ class NotificationDispatcher:
                         )
                     )
 
-        # Over-consumption (global)
-        if self._cfg.get(CONF_NOTIFY_ON_OVERCONSUMPTION, True) and snap.overconsumption:
-            now = dt_util.utcnow()
+        notify_overconsumption = self._cfg.get(CONF_NOTIFY_ON_OVERCONSUMPTION, True)
+        now = dt_util.utcnow()
+        total_load = snap.house_power + snap.ev_power_total
+        cap = self._cfg.get(CONF_MAX_HOUSEHOLD_POWER_W, 0) or 0
+
+        # Over-consumption (independent absolute threshold)
+        if notify_overconsumption and snap.overconsumption:
             if (
                 self._last_overconsumption is None
                 or now - self._last_overconsumption > _OVERCONSUMPTION_COOLDOWN
@@ -86,13 +94,54 @@ class NotificationDispatcher:
                     self._send(
                         title="Sovraconsumo rilevato",
                         message=(
-                            f"Consumo totale {snap.house_power + snap.ev_power_total:.0f} W "
+                            f"Consumo totale {total_load:.0f} W "
                             f"oltre la soglia di {threshold} W."
                         ),
                         tag="overconsumption",
                     )
                 )
                 self._last_overconsumption = now
+
+        # Hard cap reached: high-priority alarm
+        if notify_overconsumption and snap.cap_reached and cap > 0:
+            if (
+                self._last_cap_alarm is None
+                or now - self._last_cap_alarm > _CAP_COOLDOWN
+            ):
+                self.hass.async_create_task(
+                    self._send(
+                        title="⚠ Limite contatore raggiunto",
+                        message=(
+                            f"Carico totale {total_load:.0f} W al limite "
+                            f"impostato di {cap:.0f} W. La ricarica EV "
+                            f"è stata limitata per evitare lo stacco."
+                        ),
+                        tag="cap_reached",
+                    )
+                )
+                self._last_cap_alarm = now
+        # Approaching cap: soft warning (within tolerance band)
+        elif (
+            notify_overconsumption
+            and snap.approaching_cap
+            and not snap.cap_reached
+            and cap > 0
+        ):
+            if (
+                self._last_cap_warning is None
+                or now - self._last_cap_warning > _CAP_COOLDOWN
+            ):
+                self.hass.async_create_task(
+                    self._send(
+                        title="Attenzione: vicino al limite contatore",
+                        message=(
+                            f"Carico totale {total_load:.0f} W: stai entrando "
+                            f"nella tolleranza del limite ({cap:.0f} W)."
+                        ),
+                        tag="cap_warning",
+                    )
+                )
+                self._last_cap_warning = now
 
         # Mode change
         if (

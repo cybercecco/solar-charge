@@ -158,6 +158,9 @@
           "hysteresis_w": "Isteresi",
           "overconsumption_threshold_w": "Soglia sovraconsumo",
           "max_household_power_w": "Potenza massima casa (cap, 0 = disabilitato)",
+          "max_household_tolerance_pct": "Tolleranza sul cap (%)",
+          "fast_grid_budget_w": "Modalità Fast: budget rete (W)",
+          "battery_fast_soc": "Modalità Battery Fast: SOC minimo per EV (%)",
           "update_interval": "Intervallo di ricalcolo"
         },
         "data_description": {
@@ -165,8 +168,11 @@
           "charger_distribution": "Come ripartire la potenza totale EV tra le colonnine configurate.",
           "min_pv_surplus_w": "Soglia di surplus per iniziare la ricarica.",
           "hysteresis_w": "Banda morta per evitare oscillazioni.",
-          "overconsumption_threshold_w": "Soglia totale per l'allarme sovraconsumo.",
-          "max_household_power_w": "Limite hard sull'assorbimento totale della casa: anche con boost attivo la ricarica EV viene limitata per non superarlo. Imposta 0 per disabilitare.",
+          "overconsumption_threshold_w": "Soglia totale per l'allarme sovraconsumo (indipendente dal cap).",
+          "max_household_power_w": "Limite hard sull'assorbimento totale della casa: anche in modalità Fast la ricarica EV viene limitata per non superarlo. Imposta 0 per disabilitare.",
+          "max_household_tolerance_pct": "Pre-allarme: notifica quando il carico totale supera (1 − tolleranza) × cap. Default 10% → warning a 90% del cap, allarme al 100%.",
+          "fast_grid_budget_w": "Massima potenza che la modalità Fast può prelevare dalla rete in aggiunta al fotovoltaico. Default 3000 W.",
+          "battery_fast_soc": "In modalità Battery Fast la colonnina riceve PV solo dopo che la batteria di casa ha raggiunto questo SOC. Default 98%.",
           "update_interval": "Frequenza di ricalcolo in secondi."
         }
       },
@@ -192,12 +198,13 @@
   "selector": {
     "mode": {
       "options": {
+        "off": "Spenta",
         "eco": "Eco — solo surplus solare",
-        "balanced": "Bilanciato",
-        "boost_car": "Boost auto",
-        "boost_battery": "Boost batteria",
-        "fast": "Ricarica rapida",
-        "off": "Spento"
+        "balanced": "Bilanciato (EV = batteria)",
+        "fast": "Fast (PV + rete)",
+        "boost_battery": "Battery Fast (batteria prima)",
+        "manual": "Manuale (bypass)",
+        "boost_car": "Boost auto (legacy)"
       }
     },
     "distribution": {
@@ -247,12 +254,13 @@
       "mode": {
         "name": "Modalità di bilanciamento",
         "state": {
+          "off": "Spenta",
           "eco": "Eco",
           "balanced": "Bilanciato",
-          "boost_car": "Boost auto",
-          "boost_battery": "Boost batteria",
-          "fast": "Rapida",
-          "off": "Spento"
+          "fast": "Fast",
+          "boost_battery": "Battery Fast",
+          "manual": "Manuale",
+          "boost_car": "Boost auto"
         }
       },
       "distribution": {

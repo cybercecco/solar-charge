@@ -42,6 +42,9 @@ class EvController:
         self._last_current: dict[str, float] = {}
         self._last_power: dict[str, float] = {}
         self._last_switch: dict[str, bool] = {}
+        # Tracks the previous coordinator mode so we can detect a
+        # MANUAL → other transition and immediately reapply control.
+        self._prev_manual: bool = False
 
     @callback
     def async_start(self) -> None:
@@ -62,6 +65,25 @@ class EvController:
         self.hass.async_create_task(self._apply(snap))
 
     async def _apply(self, snap: FlowSnapshot) -> None:
+        # Manual mode: stay out of the way completely.
+        if snap.manual:
+            self._prev_manual = True
+            return
+
+        # Detect "manual → automatic" transition: clear all hysteresis
+        # caches so the next write is forced regardless of how close the
+        # new value is to the last written one. This guarantees the user
+        # gets immediate control back when they leave manual mode.
+        if self._prev_manual:
+            self._last_current.clear()
+            self._last_power.clear()
+            self._last_switch.clear()
+            self._prev_manual = False
+            _LOGGER.info(
+                "Solar Charge: leaving manual mode → forcing immediate "
+                "re-apply on all chargers"
+            )
+
         cfg_by_id = {
             c[CHARGER_ID]: c
             for c in (self._cfg.get(CONF_CHARGERS, []) or [])

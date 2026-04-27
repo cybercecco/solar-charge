@@ -31,21 +31,25 @@ from .const import (
     CHARGER_PRIORITY,
     CHARGER_VOLTAGE,
     CONF_BATTERIES,
+    CONF_BATTERY_FAST_SOC,
     CONF_BATTERY_MAX_CHARGE_W,
     CONF_BATTERY_MIN_SOC,
     CONF_BATTERY_TARGET_SOC,
     CONF_CHARGER_DISTRIBUTION,
     CONF_CHARGERS,
     CONF_DEFAULT_PRIORITY,
+    CONF_FAST_GRID_BUDGET_W,
     CONF_GRID_IS_EXPORT_NEGATIVE,
     CONF_GRID_POWER_ENTITY,
     CONF_HOUSE_POWER_ENTITY,
     CONF_HYSTERESIS_W,
     CONF_MIN_PV_SURPLUS_W,
     CONF_MAX_HOUSEHOLD_POWER_W,
+    CONF_MAX_HOUSEHOLD_TOLERANCE_PCT,
     CONF_OVERCONSUMPTION_THRESHOLD_W,
     CONF_PV_POWER_ENTITIES,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_BATTERY_FAST_SOC,
     DEFAULT_BATTERY_MAX_CHARGE_W,
     DEFAULT_BATTERY_MIN_SOC,
     DEFAULT_BATTERY_TARGET_SOC,
@@ -54,17 +58,20 @@ from .const import (
     DEFAULT_EV_MIN_CURRENT,
     DEFAULT_EV_PHASES,
     DEFAULT_EV_VOLTAGE,
+    DEFAULT_FAST_GRID_BUDGET_W,
     DEFAULT_HYSTERESIS_W,
     DEFAULT_MIN_PV_SURPLUS_W,
     DEFAULT_MAX_HOUSEHOLD_POWER_W,
+    DEFAULT_MAX_HOUSEHOLD_TOLERANCE_PCT,
     DEFAULT_OVERCONSUMPTION_W,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     MODE_BALANCED,
-    MODE_BOOST_BATTERY,
+    MODE_BATTERY_FAST,
     MODE_BOOST_CAR,
     MODE_ECO,
     MODE_FAST,
+    MODE_MANUAL,
     MODE_OFF,
 )
 
@@ -115,7 +122,14 @@ class FlowSnapshot:
     recommended_ev_power_total: float = 0.0
     battery_allocation: float = 0.0
     mode: str = MODE_BALANCED
+    # When True the coordinator did NOT compute a recommended power for the
+    # chargers (manual mode). The EV controller reads this flag to decide
+    # whether to push values to the wallbox(es) or stay out of the way.
+    manual: bool = False
     overconsumption: bool = False
+    # Soft / hard household-power limit notifications.
+    approaching_cap: bool = False  # >= (1 - tolerance) * cap
+    cap_reached: bool = False      # >= cap
     chargers: list[ChargerSnapshot] = field(default_factory=list)
     batteries: list[BatterySnapshot] = field(default_factory=list)
     # Fields that were computed via energy-balance instead of being measured.
@@ -162,6 +176,24 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
         )
         self.max_household_w: int = int(
             self._data.get(CONF_MAX_HOUSEHOLD_POWER_W, DEFAULT_MAX_HOUSEHOLD_POWER_W)
+        )
+        # Tolerance is stored as a percentage 0..100; clamp to a sane range.
+        tol = int(
+            self._data.get(
+                CONF_MAX_HOUSEHOLD_TOLERANCE_PCT, DEFAULT_MAX_HOUSEHOLD_TOLERANCE_PCT
+            )
+        )
+        self.max_household_tolerance_pct: int = max(0, min(50, tol))
+        self.fast_grid_budget_w: int = max(
+            0,
+            int(self._data.get(CONF_FAST_GRID_BUDGET_W, DEFAULT_FAST_GRID_BUDGET_W)),
+        )
+        self.battery_fast_soc: int = max(
+            0,
+            min(
+                100,
+                int(self._data.get(CONF_BATTERY_FAST_SOC, DEFAULT_BATTERY_FAST_SOC)),
+            ),
         )
         self._last_total_reco: float = 0.0
         self._per_charger_last_reco: dict[str, float] = {}
@@ -415,7 +447,49 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
 
     # ------------------------------------------------------------------
     def _compute_recommendation(self, snap: FlowSnapshot) -> None:
-        """Compute total EV allocation, then distribute across chargers."""
+        """Compute total EV allocation, then distribute across chargers.
+
+        Mode semantics (matches the user-facing spec exactly):
+
+        - off          → all chargers go to 0 W. PV that's not consumed by the
+                         house can still flow into the home battery.
+        - eco          → only PV surplus relative to the house load is offered
+                         to the EV (`pv − base_house`). Battery competes
+                         neutrally for whatever the EV doesn't take.
+        - balanced     → EV receives the SAME power that goes to the home
+                         battery, paid only by PV.
+        - fast         → all the available PV plus up to `fast_grid_budget_w`
+                         from the grid (default 3 kW). The home battery
+                         doesn't get anything in this mode.
+        - battery_fast → all available PV is reserved for the home battery
+                         until it reaches `battery_fast_soc` (default 98 %).
+                         Beyond that threshold the EV gets the PV surplus.
+        - manual       → the integration steps back: chargers keep their
+                         user-driven values, recommended_power = 0. The
+                         EV controller reads `snap.manual` and skips writes.
+
+        On top of any mode, the hard cap `max_household_w` is enforced and
+        the soft warning at `(1 - tolerance) * cap` is signaled via
+        `snap.approaching_cap` / `snap.cap_reached`.
+        """
+        mode = self.mode
+        snap.mode = mode
+        snap.manual = mode == MODE_MANUAL
+
+        # Quick exit on manual: don't touch the chargers
+        if snap.manual:
+            for ch in snap.chargers:
+                ch.recommended_power = 0.0
+                ch.recommended_current = 0.0
+            snap.recommended_ev_power_total = 0.0
+            snap.battery_allocation = 0.0
+            snap.surplus = max(0.0, snap.pv_power - max(0.0, snap.house_power - snap.ev_power_total))
+            # Reset hysteresis caches so the next non-manual cycle
+            # immediately writes a fresh value (no stale "freeze").
+            self._last_total_reco = 0.0
+            self._per_charger_last_reco = {ch.id: 0.0 for ch in snap.chargers}
+            return
+
         # 1) Available PV after covering house load (excluding current EV draw,
         #    which is a controlled consumer we will re-allocate)
         base_house = max(0.0, snap.house_power - snap.ev_power_total)
@@ -438,47 +512,66 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
 
         ev_total = 0.0
         batt_target = 0.0
-        mode = self.mode
 
         if mode == MODE_OFF:
+            # Charger off, but PV not consumed by the house can still feed
+            # the home battery.
             batt_target = min(batt_max, max(0.0, available))
-        elif mode == MODE_FAST:
-            ev_total = ev_max_total
-            leftover = available - ev_total
-            batt_target = min(batt_max, max(0.0, leftover))
         elif mode == MODE_ECO:
-            effective = max(0.0, available - batt_max) if batt_can_charge else max(0.0, available)
-            if effective >= self.min_pv_surplus + ev_min_first:
-                ev_total = min(ev_max_total, effective)
+            # Only the PV surplus relative to the house base load. The home
+            # battery is treated as a neutral competitor: it grabs whatever
+            # the EV does not take.
+            ev_candidate = max(0.0, available)
+            if ev_candidate >= self.min_pv_surplus + ev_min_first:
+                ev_total = min(ev_max_total, ev_candidate)
             batt_target = min(batt_max, max(0.0, available - ev_total))
+        elif mode == MODE_BALANCED:
+            # EV power = battery charging power, both paid only by PV.
+            # Split the available surplus 50/50, then make EV match the
+            # battery share so the two are visibly synchronised. If only
+            # one side has headroom the other gets 0 (no grid imports).
+            if available >= self.min_pv_surplus:
+                half = available / 2.0
+                batt_target = min(batt_max, half)
+                ev_total = min(ev_max_total, batt_target)
+                # If batt cannot accept its share (full / disabled), the
+                # promise of "matching" forbids feeding the EV from the
+                # leftover: keep ev_total at the matched value.
+        elif mode == MODE_FAST:
+            # All PV (over base_house) plus up to fast_grid_budget_w
+            # imported from the grid. Battery does not charge in this
+            # mode (everything goes to the EV).
+            grid_budget = float(self.fast_grid_budget_w)
+            ev_candidate = max(0.0, available) + grid_budget
+            if ev_candidate >= ev_min_first:
+                ev_total = min(ev_max_total, ev_candidate)
+            batt_target = 0.0
+        elif mode == MODE_BATTERY_FAST:
+            # Battery first, EV only when SOC has reached battery_fast_soc.
+            if soc < self.battery_fast_soc:
+                batt_target = min(batt_max, max(0.0, available))
+                # No surplus is re-routed to the EV until the battery is full.
+            else:
+                ev_candidate = max(0.0, available)
+                if ev_candidate >= ev_min_first:
+                    ev_total = min(ev_max_total, ev_candidate)
+                # Battery is at/above target: leftover (rare) feeds it back.
+                batt_target = min(batt_max, max(0.0, available - ev_total))
         elif mode == MODE_BOOST_CAR:
+            # Legacy mode: similar to FAST but without the grid budget.
+            # Kept for backward compatibility with existing automations.
             if available >= ev_min_first:
                 ev_total = min(ev_max_total, max(available, ev_min_first))
             else:
                 ev_total = ev_min_first if soc >= self.battery_min_soc else 0.0
             batt_target = min(batt_max, max(0.0, available - ev_total))
-        elif mode == MODE_BOOST_BATTERY:
-            batt_target = min(batt_max, max(0.0, available))
-            leftover = available - batt_target
-            if leftover >= self.min_pv_surplus + ev_min_first:
-                ev_total = min(ev_max_total, leftover)
-        else:  # MODE_BALANCED
-            if soc < self.battery_min_soc:
-                batt_target = min(batt_max, max(0.0, available))
-                leftover = available - batt_target
-                if leftover >= self.min_pv_surplus + ev_min_first:
-                    ev_total = min(ev_max_total, leftover)
-            else:
-                if available >= self.min_pv_surplus:
-                    half = available / 2.0
-                    batt_target = min(batt_max, half)
-                    ev_candidate = available - batt_target
-                    if ev_candidate >= ev_min_first:
-                        ev_total = min(ev_max_total, ev_candidate)
-                    else:
-                        batt_target = min(batt_max, available)
+        else:
+            # Unknown / future modes fall back to balanced semantics.
+            if available >= self.min_pv_surplus:
+                batt_target = min(batt_max, available / 2.0)
+                ev_total = min(ev_max_total, batt_target)
 
-        # Hard safety cap: no matter the mode (boost included), the total
+        # Hard safety cap: no matter the mode (fast included), the total
         # instantaneous household draw must not exceed max_household_w.
         # `base_house` already excludes current EV draw, so the headroom
         # available to EVs is `cap - base_house`.
@@ -579,8 +672,24 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
 
     # ------------------------------------------------------------------
     def _detect_events(self, snap: FlowSnapshot) -> None:
-        total_load = snap.house_power + snap.ev_power_total
+        # `house_power` already includes EV draw on most installations
+        # (single house meter). Use the maximum of the two interpretations
+        # so we don't underestimate the load when topology differs.
+        total_load = max(
+            snap.house_power,
+            (snap.house_power - snap.ev_power_total) + snap.ev_power_total,
+        )
         snap.overconsumption = total_load >= self.overconsumption_w
+
+        # Household power cap warning. tolerance_pct = 10 means:
+        #   approaching_cap when total_load >= 0.9 * cap
+        #   cap_reached     when total_load >= cap
+        if self.max_household_w > 0:
+            cap = float(self.max_household_w)
+            tol = self.max_household_tolerance_pct / 100.0
+            warn_th = cap * (1.0 - tol)
+            snap.approaching_cap = total_load >= warn_th
+            snap.cap_reached = total_load >= cap
 
         for ch in snap.chargers:
             was_charging = self._per_charger_last_charging.get(ch.id, False)

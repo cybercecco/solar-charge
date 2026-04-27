@@ -82,8 +82,11 @@ from .const import (
     CONF_GRID_IS_EXPORT_NEGATIVE,
     CONF_GRID_POWER_ENTITY,
     CONF_HOUSE_POWER_ENTITY,
+    CONF_BATTERY_FAST_SOC,
+    CONF_FAST_GRID_BUDGET_W,
     CONF_HYSTERESIS_W,
     CONF_MAX_HOUSEHOLD_POWER_W,
+    CONF_MAX_HOUSEHOLD_TOLERANCE_PCT,
     CONF_MIN_PV_SURPLUS_W,
     CONF_NOTIFY_ON_CHARGE_COMPLETE,
     CONF_NOTIFY_ON_MODE_CHANGE,
@@ -93,6 +96,7 @@ from .const import (
     CONF_PV_POWER_ENTITIES,
     CONF_TITLE,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_BATTERY_FAST_SOC,
     DEFAULT_BATTERY_MAX_CHARGE_W,
     DEFAULT_BATTERY_MIN_SOC,
     DEFAULT_BATTERY_TARGET_SOC,
@@ -101,8 +105,10 @@ from .const import (
     DEFAULT_EV_MIN_CURRENT,
     DEFAULT_EV_PHASES,
     DEFAULT_EV_VOLTAGE,
+    DEFAULT_FAST_GRID_BUDGET_W,
     DEFAULT_HYSTERESIS_W,
     DEFAULT_MAX_HOUSEHOLD_POWER_W,
+    DEFAULT_MAX_HOUSEHOLD_TOLERANCE_PCT,
     DEFAULT_MIN_PV_SURPLUS_W,
     DEFAULT_OVERCONSUMPTION_W,
     DEFAULT_UPDATE_INTERVAL,
@@ -332,6 +338,29 @@ def _schema_thresholds(defaults: dict[str, Any]) -> vol.Schema:
                 default=d.get(CONF_MAX_HOUSEHOLD_POWER_W, DEFAULT_MAX_HOUSEHOLD_POWER_W),
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0, max=30000, step=100, unit_of_measurement="W")
+            ),
+            vol.Required(
+                CONF_MAX_HOUSEHOLD_TOLERANCE_PCT,
+                default=d.get(
+                    CONF_MAX_HOUSEHOLD_TOLERANCE_PCT,
+                    DEFAULT_MAX_HOUSEHOLD_TOLERANCE_PCT,
+                ),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=0, max=50, step=1, unit_of_measurement="%")
+            ),
+            vol.Required(
+                CONF_FAST_GRID_BUDGET_W,
+                default=d.get(CONF_FAST_GRID_BUDGET_W, DEFAULT_FAST_GRID_BUDGET_W),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0, max=22000, step=100, unit_of_measurement="W"
+                )
+            ),
+            vol.Required(
+                CONF_BATTERY_FAST_SOC,
+                default=d.get(CONF_BATTERY_FAST_SOC, DEFAULT_BATTERY_FAST_SOC),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(min=50, max=100, step=1, unit_of_measurement="%")
             ),
             vol.Required(
                 CONF_UPDATE_INTERVAL, default=d.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)

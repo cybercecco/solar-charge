@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.11.2";
+const CARD_VERSION = "0.12.0";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -459,15 +459,22 @@ class SolarChargeCard extends HTMLElement {
 
   _modeChipsHTML() {
     if (!this._config.mode_entity) return "";
-    const modes = ["off", "balanced", "fast"];
+    // Use the SAME 6-mode set as the standalone mode card so that whichever
+    // card the user interacts with they see (and can switch to) the same
+    // states. We keep the chips compact (no labels on small widths) so the
+    // header doesn't crowd the graph below.
     return `
       <div class="modes">
-        ${modes
-          .map(
-            (m) =>
-              `<button class="chip" data-action="mode" data-value="${m}">${m}</button>`
-          )
-          .join("")}
+        ${MODE_BUTTONS.map(
+          (m) => `
+          <button class="chip mode-chip" data-action="mode"
+                  data-value="${m.value}"
+                  style="--chip-color: ${m.color}"
+                  title="${m.label}" aria-label="${m.label}">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${m.icon}"/></svg>
+            <span>${m.label}</span>
+          </button>`
+        ).join("")}
       </div>
     `;
   }
@@ -946,13 +953,18 @@ class SolarChargeCard extends HTMLElement {
       });
     }
 
-    // Mode chips in the footer
+    // Mode chips in the header — synced with both this card's chips and
+    // the standalone `solar-charge-mode-card`. We toggle a global `manual`
+    // class on the host so the rest of the UI can dim itself out.
+    let currentMode = "";
     if (c.mode_entity) {
-      const m = stateStr(this._hass, c.mode_entity);
-      this.shadowRoot.querySelectorAll(".modes .chip").forEach((btn) => {
-        btn.classList.toggle("active", btn.dataset.value === m);
+      currentMode = stateStr(this._hass, c.mode_entity);
+      this.shadowRoot.querySelectorAll(".modes .mode-chip").forEach((btn) => {
+        btn.classList.toggle("active", btn.dataset.value === currentMode);
       });
     }
+    const haCard = this.shadowRoot.querySelector("ha-card");
+    if (haCard) haCard.classList.toggle("manual-mode", currentMode === "manual");
     // Per-balloon boost buttons
     if (c.boost_battery_entity) {
       const on = stateStr(this._hass, c.boost_battery_entity) === "on";
@@ -1248,6 +1260,7 @@ class SolarChargeCard extends HTMLElement {
     return `
       :host { display: block; }
       ha-card {
+        position: relative;
         padding: 12px 14px 14px;
         background:
           radial-gradient(ellipse at top, rgba(120,140,180,0.08), transparent 70%),
@@ -1257,6 +1270,25 @@ class SolarChargeCard extends HTMLElement {
         display: flex;
         flex-direction: column;
         min-height: 460px;
+      }
+      /* Visual cue when the integration is bypassed: dim the live flows
+         and display a small "manuale" badge in the corner of the stage. */
+      ha-card.manual-mode .stage { opacity: 0.55; filter: saturate(0.6); }
+      ha-card.manual-mode::after {
+        content: "MANUALE — bypass attivo";
+        position: absolute;
+        top: 10px;
+        right: 14px;
+        font-size: 0.62rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        padding: 3px 8px;
+        border-radius: 999px;
+        background: rgba(179, 136, 255, 0.18);
+        border: 1px solid #B388FF;
+        color: #B388FF;
+        pointer-events: none;
+        z-index: 5;
       }
 
       /* Header: title + compact mode chips (always takes minimal vertical
@@ -1281,23 +1313,37 @@ class SolarChargeCard extends HTMLElement {
         gap: 5px;
         flex-wrap: wrap;
       }
-      .chip {
+      .mode-chip {
+        --chip-color: #9aa0a6;
         font-family: inherit;
         font-size: 0.7rem;
-        color: var(--primary-text-color, #ddd);
-        background: rgba(255,255,255,0.04);
-        border: 1px solid rgba(255,255,255,0.12);
+        font-weight: 600;
+        color: var(--chip-color);
+        background: rgba(255,255,255,0.03);
+        border: 1.4px solid var(--chip-color);
         border-radius: 999px;
-        padding: 4px 11px;
+        padding: 4px 9px 4px 7px;
         cursor: pointer;
-        text-transform: capitalize;
-        transition: background 180ms ease, border-color 180ms ease, color 180ms ease;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        opacity: 0.55;
+        transition: background 180ms ease, color 180ms ease,
+                    box-shadow 180ms ease, opacity 180ms ease;
       }
-      .chip:hover { background: rgba(255,255,255,0.09); }
-      .chip.active {
-        background: rgba(102,187,106,0.18);
-        border-color: ${NODE_COLORS.home};
-        color: #e6ffe9;
+      .mode-chip svg { width: 13px; height: 13px; fill: currentColor; }
+      .mode-chip:hover { opacity: 0.85; background: rgba(255,255,255,0.06); }
+      .mode-chip.active {
+        opacity: 1;
+        color: #0b0d12;
+        background: var(--chip-color);
+        box-shadow: 0 0 10px -2px var(--chip-color);
+      }
+      .mode-chip.active svg { filter: none; }
+      /* Compact view: drop the label on narrow headers (icons only). */
+      @media (max-width: 700px) {
+        .mode-chip span { display: none; }
+        .mode-chip { padding: 5px; }
       }
 
       /* Stage (graph area): gets 3 parts of the vertical space. */
@@ -1599,48 +1645,50 @@ if (!customElements.get("solar-charge-card-editor")) {
 // up; tapping any other one calls `select.select_option`. Icons are
 // inline SVG paths so there's no dependency on Material icons.
 // ---------------------------------------------------------------------------
+// Synchronised across both cards (the graph card header and the dedicated
+// mode-selector card). Order matches the user-facing flow:
+//   Off → Eco → Balanced → Fast → Battery Fast → Manual
+// `value` MUST match the option exposed by `select.solar_charge_balancing_mode`
+// in the integration. `boost_battery` is the on-disk id of the "Battery Fast"
+// mode (kept for backward compatibility); `manual` is a soft state that tells
+// the EV controller to step back and let the user drive the chargers.
 const MODE_BUTTONS = [
   {
     value: "off",
     label: "Off",
     color: "#9aa0a6",
-    // Power symbol
     icon: "M13 3h-2v10h2V3zM6.76 5.51l-1.42 1.42A7 7 0 0 0 12 19a7 7 0 0 0 6.66-12.07l-1.42-1.42A5 5 0 1 1 7 7a5 5 0 0 1-.24-1.49z",
   },
   {
     value: "eco",
     label: "Eco",
     color: "#66BB6A",
-    // Leaf
     icon: "M17 3c-6 0-10 4-10 10 0 3 1 5 2 6l-2 2 1 1 2-2c1 1 3 2 6 2 6 0 10-4 10-10 0-5-4-9-9-9zm-1 4c-3 1-6 3-7 7-1-3 1-6 5-7h2z",
   },
   {
     value: "balanced",
-    label: "Balanced",
+    label: "Bilanciato",
     color: "#42A5F5",
-    // Scales
     icon: "M12 3a1 1 0 0 1 1 1v1h5a1 1 0 1 1 0 2h-1.1l2.6 6.2a3 3 0 0 1-5.8 1H13v7h4v2H7v-2h4v-7h-1.7a3 3 0 0 1-5.8-1L6.1 7H5a1 1 0 0 1 0-2h5V4a1 1 0 0 1 1-1zm5 5.4L15.3 13h3.4L17 8.4zM7 8.4L5.3 13h3.4L7 8.4z",
-  },
-  {
-    value: "boost_car",
-    label: "Boost Auto",
-    color: "#26C6DA",
-    // Car + bolt
-    icon: "M5 11l1.5-4.5a2 2 0 0 1 2-1.5h7a2 2 0 0 1 2 1.5L19 11h1a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-1v1a1 1 0 0 1-2 0v-1H7v1a1 1 0 0 1-2 0v-1H4a1 1 0 0 1-1-1v-5a1 1 0 0 1 1-1h1zm2 4a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zm10 0a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM12.5 2l-3 5h2l-1 4 3-5h-2l1-4z",
-  },
-  {
-    value: "boost_battery",
-    label: "Boost Batteria",
-    color: "#EC407A",
-    // Battery + bolt
-    icon: "M9 4h6v2h2v16H7V6h2V4zm2 5l-2 5h2v4l3-5h-2l1-4h-2z",
   },
   {
     value: "fast",
     label: "Fast",
     color: "#FFB300",
-    // Bolt / lightning
     icon: "M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z",
+  },
+  {
+    value: "boost_battery",
+    label: "Battery Fast",
+    color: "#EC407A",
+    icon: "M9 4h6v2h2v16H7V6h2V4zm2 5l-2 5h2v4l3-5h-2l1-4h-2z",
+  },
+  {
+    value: "manual",
+    label: "Manuale",
+    color: "#B388FF",
+    // Hand cursor to communicate "user takes over"
+    icon: "M9 11V5a1 1 0 0 1 2 0v6h1V3a1 1 0 0 1 2 0v8h1V4a1 1 0 0 1 2 0v9h1V7a1 1 0 0 1 2 0v9a5 5 0 0 1-5 5h-2.2a4 4 0 0 1-3.4-1.9l-3.7-6.2a1 1 0 0 1 1.5-1.3l1.8 1.7V11a1 1 0 1 1 2 0z",
   },
 ];
 
