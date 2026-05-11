@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.4";
+const CARD_VERSION = "0.12.5";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -1396,11 +1396,33 @@ class SolarChargeCard extends HTMLElement {
     const action = btn.dataset.action;
     const c = this._config;
     try {
-      if (action === "mode" && c.mode_entity) {
-        await this._hass.callService("select", "select_option", {
-          entity_id: c.mode_entity,
-          option: btn.dataset.value,
-        });
+      if (action === "mode") {
+        // Same dual-strategy as the standalone mode card: try the
+        // configured `select` entity first, fall back to the integration's
+        // dedicated `solar_charge.set_mode` service if anything goes wrong.
+        const value = btn.dataset.value;
+        let ok = false;
+        if (c.mode_entity) {
+          try {
+            await this._hass.callService("select", "select_option", {
+              entity_id: c.mode_entity,
+              option: value,
+            });
+            ok = true;
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn(
+              "[solar-charge-card] mode chip select.select_option failed, " +
+                "falling back to solar_charge.set_mode:",
+              err
+            );
+          }
+        }
+        if (!ok) {
+          await this._hass.callService("solar_charge", "set_mode", {
+            mode: value,
+          });
+        }
       } else if (action === "boost-battery" && c.boost_battery_entity) {
         await this._hass.callService("switch", "toggle", {
           entity_id: c.boost_battery_entity,
@@ -1970,37 +1992,60 @@ class SolarChargeModeCard extends HTMLElement {
     const btn = ev.currentTarget;
     const value = btn.dataset.value;
     if (!this._hass || !value) return;
-    const entityId = this._resolveModeEntity();
-    if (!entityId) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[solar-charge-mode-card] no select entity found for balancing mode. " +
-          "Set `mode_entity:` in the card YAML to the correct select.* id."
-      );
-      return;
-    }
+
     // Optimistic visual feedback: highlight the chip immediately so the
     // user gets a response even while the service round-trips (or fails).
     this.shadowRoot.querySelectorAll(".chip").forEach((b) => {
       b.classList.toggle("active", b === btn);
     });
-    try {
-      await this._hass.callService("select", "select_option", {
-        entity_id: entityId,
-        option: value,
-      });
-    } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(
-        "[solar-charge-mode-card] select.select_option failed for",
-        entityId,
-        "option=",
-        value,
-        err
-      );
-      // Roll back optimistic highlight on failure
-      this._update();
+
+    const entityId = this._resolveModeEntity();
+    let okVia = null;
+
+    // Strategy 1: drive the integration's `select` entity. This is the
+    // most natural path and shows up in the HA logbook as "user changed
+    // mode to X".
+    if (entityId) {
+      try {
+        await this._hass.callService("select", "select_option", {
+          entity_id: entityId,
+          option: value,
+        });
+        okVia = `select.select_option(${entityId}, ${value})`;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[solar-charge-mode-card] select.select_option failed, will fall " +
+            "back to solar_charge.set_mode:",
+          err
+        );
+      }
     }
+
+    // Strategy 2: call the integration's dedicated service. This bypasses
+    // any entity-id resolution problem and works even when the user has
+    // a slug-suffixed select.* id (e.g. select.solar_charge_casa_balancing_mode)
+    // that our regex didn't catch.
+    if (!okVia) {
+      try {
+        await this._hass.callService("solar_charge", "set_mode", {
+          mode: value,
+        });
+        okVia = `solar_charge.set_mode(${value})`;
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          "[solar-charge-mode-card] both select.select_option and " +
+            "solar_charge.set_mode failed:",
+          err
+        );
+        // Roll back optimistic highlight to the actual current state
+        this._update();
+        return;
+      }
+    }
+    // eslint-disable-next-line no-console
+    console.info(`[solar-charge-mode-card] mode change OK via ${okVia}`);
   }
 
   _styles() {
