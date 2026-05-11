@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.5";
+const CARD_VERSION = "0.12.6";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -1869,6 +1869,7 @@ class SolarChargeModeCard extends HTMLElement {
   setConfig(config) {
     if (!config) throw new Error("Invalid configuration");
     this._config = { ...config };
+    this._enriched = false;
     if (!this._config.mode_entity) {
       this._config.mode_entity = "select.solar_charge_balancing_mode";
       // eslint-disable-next-line no-console
@@ -1879,7 +1880,7 @@ class SolarChargeModeCard extends HTMLElement {
     }
     this._mounted = false;
     try {
-      // Render even without hass: the picker tile must paint immediately.
+      if (this._hass) this._enrichConfigFromHass();
       this._render();
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -1888,30 +1889,78 @@ class SolarChargeModeCard extends HTMLElement {
     }
   }
 
-  // Locate the select entity at click-time if the configured id doesn't
-  // exist. This is our last-line defense against users copy-pasting an
-  // outdated YAML (e.g. when the integration entry's slug ended up in the
-  // entity id as `select.solar_charge_<slug>_balancing_mode`).
-  _resolveModeEntity() {
-    const cfgId = this._config?.mode_entity;
-    const states = this._hass?.states || {};
-    if (cfgId && states[cfgId]) return cfgId;
-    // Prefer the integration's canonical id; otherwise any select whose
-    // id ends in `_balancing_mode` or simply contains `balancing_mode`.
-    const candidates = Object.keys(states).filter(
+  // Resolves `mode_entity` to a real entity id by:
+  //   1. honouring an explicit YAML value when it actually exists in hass,
+  //   2. otherwise picking from the auto-detected solar_charge config
+  //      (`autoConfigFromHass` reads the integration's entity registry,
+  //      so it works even when the user renamed the entity), and
+  //   3. as a last resort scanning hass.states for any select whose id
+  //      contains `balancing_mode`.
+  // The card uses the SAME helper that the graph card uses for its own
+  // enrichment, so both end up pointing to the same select even when
+  // the integration's entry slug is non-default.
+  _enrichConfigFromHass() {
+    if (!this._hass || !this._config) return false;
+    if (this._enriched) return false;
+    const cfgId = this._config.mode_entity;
+    const states = this._hass.states || {};
+    // 1) Already valid?
+    if (cfgId && states[cfgId]) {
+      this._enriched = true;
+      return false;
+    }
+    // 2) Walk the integration registry.
+    const detected = autoConfigFromHass(this._hass);
+    if (detected?.mode_entity && states[detected.mode_entity]) {
+      this._config = { ...this._config, mode_entity: detected.mode_entity };
+      this._enriched = true;
+      // eslint-disable-next-line no-console
+      console.info(
+        "[solar-charge-mode-card] mode_entity auto-resolved to",
+        detected.mode_entity
+      );
+      return true;
+    }
+    // 3) Loose match on hass.states.
+    const candidate = Object.keys(states).find(
       (id) =>
         id.startsWith("select.") &&
         (id === "select.solar_charge_balancing_mode" ||
           id.endsWith("_balancing_mode") ||
           id.includes("balancing_mode"))
     );
-    return candidates[0] || cfgId || null;
+    if (candidate) {
+      this._config = { ...this._config, mode_entity: candidate };
+      this._enriched = true;
+      // eslint-disable-next-line no-console
+      console.info(
+        "[solar-charge-mode-card] mode_entity loose-matched to",
+        candidate
+      );
+      return true;
+    }
+    return false;
+  }
+
+  // Backwards-compatible thin wrapper used inside _onClick / _update.
+  _resolveModeEntity() {
+    const id = this._config?.mode_entity;
+    const states = this._hass?.states || {};
+    if (id && states[id]) return id;
+    // Try a fresh enrichment in case states updated since last setConfig.
+    this._enriched = false;
+    this._enrichConfigFromHass();
+    return this._config?.mode_entity || null;
   }
 
   set hass(hass) {
     this._hass = hass;
     try {
-      if (!this._mounted) {
+      // Top up the config the first time hass arrives, just like the
+      // big graph card does. If anything changed we MUST re-render so
+      // _update can pick up the new mode_entity.
+      const enriched = this._enrichConfigFromHass();
+      if (!this._mounted || enriched) {
         this._render();
       } else {
         // Always re-evaluate which chip should be highlighted whenever
