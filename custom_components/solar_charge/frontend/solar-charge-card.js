@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.6";
+const CARD_VERSION = "0.12.7";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -312,6 +312,19 @@ class SolarChargeCard extends HTMLElement {
       this._recomputeRestPositions(true);
       this._startSimLoop();
     };
+    // Visibility tracking: pause every recurring animation (physics loop
+    // AND the SVG `<animateMotion>` particles) whenever the card is not
+    // actually on screen — out of viewport, in a hidden dashboard tab,
+    // or with the browser tab in background. Critical on low-power
+    // tablets where leaving multiple SolarCharge cards animating in the
+    // background causes frame drops on neighbouring gauge cards.
+    this._intersecting = true;
+    this._pageVisible = !document.hidden;
+    this._intersectionObserver = null;
+    this._onVisibilityChange = () => {
+      this._pageVisible = !document.hidden;
+      this._applyAnimationGate();
+    };
   }
 
   // ------------------------------------------------------------------
@@ -355,10 +368,28 @@ class SolarChargeCard extends HTMLElement {
   //   type: custom:solar-charge-card
   // turn into a fully populated card the moment hass arrives, mirroring
   // whatever the integration is exposing under Devices & Services.
+  //
+  // Note on retry: we only mark `_enriched = true` when we actually saw
+  // a Solar Charge entity in the registry. If the integration entry has
+  // not finished setting up (startup race) we leave the flag false so
+  // every subsequent hass tick has another shot at populating the card.
+  // Throttled to at most once per ENRICH_RETRY_MS to avoid spinning the
+  // CPU on registries with thousands of entities.
   _enrichConfigFromHass() {
     if (!this._hass || !this._config || this._enriched) return false;
+    const ENRICH_RETRY_MS = 2000;
+    const now = Date.now();
+    if (this._enrichLastTry && now - this._enrichLastTry < ENRICH_RETRY_MS) {
+      return false;
+    }
+    this._enrichLastTry = now;
+
     const detected = autoConfigFromHass(this._hass);
-    if (!detected) return false;
+    if (!detected) {
+      // Integration entities not yet registered. Do NOT mark as
+      // enriched: try again on the next state change.
+      return false;
+    }
     const target = { ...this._config };
     let changed = false;
 
@@ -395,9 +426,9 @@ class SolarChargeCard extends HTMLElement {
       target.batteries = detected.batteries;
       changed = true;
     }
-    // Mark as enriched even when unchanged so we don't keep re-evaluating
-    // the registry on every hass tick. A subsequent setConfig (e.g. user
-    // edited the YAML) resets the flag.
+    // We only stop retrying once we actually found Solar Charge entities
+    // (detected !== null). A subsequent setConfig (user edited YAML)
+    // clears this flag.
     this._enriched = true;
     if (changed) {
       this._config = target;
@@ -491,13 +522,81 @@ class SolarChargeCard extends HTMLElement {
     this._mounted = true;
   }
 
+  connectedCallback() {
+    // Re-arm visibility tracking on (re)mount, e.g. when the user
+    // switches dashboards and comes back to this one.
+    document.addEventListener("visibilitychange", this._onVisibilityChange);
+    this._pageVisible = !document.hidden;
+    this._observeIntersection();
+    // If we were already mounted previously, restart the loops so the
+    // graph is alive again. The gate decides if the loop should actually
+    // tick or stay parked.
+    if (this._mounted) this._applyAnimationGate();
+  }
+
   disconnectedCallback() {
     if (this._resizeObserver) {
       this._resizeObserver.disconnect();
       this._resizeObserver = null;
     }
+    if (this._intersectionObserver) {
+      this._intersectionObserver.disconnect();
+      this._intersectionObserver = null;
+    }
+    document.removeEventListener("visibilitychange", this._onVisibilityChange);
     window.removeEventListener("resize", this._onResize);
     this._stopSimLoop();
+    // Pause the SVG animateMotion clocks too: when this element is
+    // re-attached (e.g. dashboard switch) we resume them on demand.
+    this._setSvgAnimationsPaused(true);
+  }
+
+  // Combined gate: decides whether the rAF physics loop should run AND
+  // whether the SVG flow particles should keep ticking. The card is
+  // "live" only when it's both inside the viewport and on the active
+  // browser tab.
+  _applyAnimationGate() {
+    const live = !!(this._intersecting && this._pageVisible);
+    if (live) {
+      this._setSvgAnimationsPaused(false);
+      this._startSimLoop();
+    } else {
+      this._setSvgAnimationsPaused(true);
+      this._stopSimLoop();
+    }
+  }
+
+  _observeIntersection() {
+    if (typeof IntersectionObserver === "undefined") return;
+    if (this._intersectionObserver) this._intersectionObserver.disconnect();
+    this._intersectionObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          this._intersecting = entry.isIntersecting;
+        }
+        this._applyAnimationGate();
+      },
+      { threshold: 0 }
+    );
+    this._intersectionObserver.observe(this);
+  }
+
+  // Use the SVGSVGElement's internal animation clock so we don't have to
+  // tear down / rebuild the wires when leaving the viewport. `pauseAnimations`
+  // and `unpauseAnimations` are part of the SVG 1.1 DOM API and are
+  // implemented by every browser HA targets (Chromium / WebKit / Gecko).
+  _setSvgAnimationsPaused(paused) {
+    try {
+      const svg = this.shadowRoot?.querySelector("svg.wires");
+      if (!svg) return;
+      if (paused && typeof svg.pauseAnimations === "function") {
+        svg.pauseAnimations();
+      } else if (!paused && typeof svg.unpauseAnimations === "function") {
+        svg.unpauseAnimations();
+      }
+    } catch (_) {
+      /* ignore */
+    }
   }
 
   // ------------------------------------------------------------------
@@ -546,6 +645,11 @@ class SolarChargeCard extends HTMLElement {
       // eslint-disable-next-line no-console
       console.warn("[solar-charge-card] _observeResize failed:", e);
     }
+    try { this._observeIntersection(); } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] _observeIntersection failed:", e);
+    }
+    try { this._applyAnimationGate(); } catch (_) { /* ignore */ }
     try { this._update(); } catch (e) {
       // eslint-disable-next-line no-console
       console.warn("[solar-charge-card] _update failed:", e);
@@ -798,12 +902,23 @@ class SolarChargeCard extends HTMLElement {
   }
 
   _startSimLoop() {
+    // Visibility gate: never spin the rAF loop while the card is off
+    // screen / in a backgrounded tab, even if something asks for a
+    // refresh (drag, resize, hass tick). Saves CPU on slow tablets and
+    // prevents glitchy frame timing on neighbouring gauge cards.
+    if (this._intersecting === false || this._pageVisible === false) return;
     if (this._sim.running) return;
     this._sim.running = true;
     this._sim.idleFrames = 0;
     this._sim.last = performance.now();
     const tick = (t) => {
       if (!this._sim.running) return;
+      // Re-check the gate every frame so the loop self-stops when the
+      // card scrolls out of view mid-animation.
+      if (this._intersecting === false || this._pageVisible === false) {
+        this._sim.running = false;
+        return;
+      }
       const dt = Math.min((t - this._sim.last) / 1000, 1 / 30);
       this._sim.last = t;
       this._stepSimulation(dt);
@@ -1902,6 +2017,7 @@ class SolarChargeModeCard extends HTMLElement {
   _enrichConfigFromHass() {
     if (!this._hass || !this._config) return false;
     if (this._enriched) return false;
+    if (!this._enrichRetryAllowed()) return false;
     const cfgId = this._config.mode_entity;
     const states = this._hass.states || {};
     // 1) Already valid?
@@ -1974,6 +2090,20 @@ class SolarChargeModeCard extends HTMLElement {
       console.error("[solar-charge-mode-card] update failed:", err);
       this._renderFallback();
     }
+  }
+
+  // Mode card has no continuous animation, but `_enrichConfigFromHass`
+  // performs a registry walk on every hass tick when not yet enriched.
+  // Throttle the same way the graph card does, also resetting the
+  // throttle when setConfig is called.
+  _enrichRetryAllowed() {
+    const ENRICH_RETRY_MS = 2000;
+    const now = Date.now();
+    if (this._enrichLastTry && now - this._enrichLastTry < ENRICH_RETRY_MS) {
+      return false;
+    }
+    this._enrichLastTry = now;
+    return true;
   }
 
   _renderFallback() {
