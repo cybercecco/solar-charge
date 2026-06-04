@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.7";
+const CARD_VERSION = "0.12.9";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -272,6 +272,101 @@ function autoConfigFromHass(hass) {
   }
 }
 
+// True when `entityId` looks like the integration's balancing-mode select
+// (works with renamed ids such as select.solar_charge_balancer_modalita_di_bilanciamento).
+function isSolarChargeModeSelect(hass, entityId) {
+  if (!entityId || !hass?.states?.[entityId]) return false;
+  const st = hass.states[entityId];
+  if (!entityId.startsWith("select.")) return false;
+  const ent = hass.entities?.[entityId];
+  if (ent?.platform === "solar_charge") {
+    const uid = ent.unique_id || "";
+    if (uid.endsWith("_mode")) return true;
+  }
+  const opts = st.attributes?.options;
+  if (!Array.isArray(opts) || !opts.length) return false;
+  return (
+    opts.includes("eco") &&
+    (opts.includes("balanced") || opts.includes("off")) &&
+    (opts.includes("fast") || opts.includes("manual") || opts.includes("boost_battery"))
+  );
+}
+
+// Resolve the mode `select.*` entity: explicit YAML → registry → heuristic scan.
+function resolveModeSelectEntity(hass, preferred) {
+  if (!hass) return null;
+  const states = hass.states || {};
+  if (preferred && states[preferred] && isSolarChargeModeSelect(hass, preferred)) {
+    return preferred;
+  }
+  const detected = autoConfigFromHass(hass);
+  if (
+    detected?.mode_entity &&
+    states[detected.mode_entity] &&
+    isSolarChargeModeSelect(hass, detected.mode_entity)
+  ) {
+    return detected.mode_entity;
+  }
+  const registry = hass.entities || {};
+  const regHit = Object.values(registry).find(
+    (e) =>
+      e?.platform === "solar_charge" && (e.unique_id || "").endsWith("_mode")
+  );
+  if (regHit?.entity_id && states[regHit.entity_id]) {
+    return regHit.entity_id;
+  }
+  return (
+    Object.keys(states).find((id) => isSolarChargeModeSelect(hass, id)) || null
+  );
+}
+
+function configEntryForEntity(hass, entityId) {
+  return hass?.entities?.[entityId]?.config_entry || null;
+}
+
+function currentModeFromEntity(hass, entityId) {
+  const st = stateObj(hass, entityId);
+  if (!st) return "";
+  const raw = String(st.state ?? "");
+  if (raw === "unknown" || raw === "unavailable") return "";
+  const fromAttr = st.attributes?.current_option;
+  if (fromAttr && fromAttr !== "unknown" && fromAttr !== "unavailable") {
+    return String(fromAttr);
+  }
+  return raw;
+}
+
+function selectOptionsForEntity(hass, entityId) {
+  const st = stateObj(hass, entityId);
+  const opts = st?.attributes?.options;
+  return Array.isArray(opts) ? opts : null;
+}
+
+async function applyBalancingMode(hass, entityId, value) {
+  if (entityId) {
+    try {
+      await hass.callService("select", "select_option", {
+        entity_id: entityId,
+        option: value,
+      });
+      return `select.select_option(${entityId}, ${value})`;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[solar-charge-card] select.select_option failed, falling back to solar_charge.set_mode:",
+        err
+      );
+    }
+  }
+  const data = { mode: value };
+  const entryId = entityId ? configEntryForEntity(hass, entityId) : null;
+  if (entryId) data.entry_id = entryId;
+  await hass.callService("solar_charge", "set_mode", data);
+  return entryId
+    ? `solar_charge.set_mode(${value}, entry_id=${entryId})`
+    : `solar_charge.set_mode(${value})`;
+}
+
 // Build a smooth cubic-bezier path between two points. Control points are
 // offset along the dominant axis to produce an elegant S-curve.
 const curvePath = (x1, y1, x2, y2) => {
@@ -309,8 +404,12 @@ class SolarChargeCard extends HTMLElement {
       last: 0,
     };
     this._onResize = () => {
-      this._recomputeRestPositions(true);
-      this._startSimLoop();
+      if (this._animationsEnabled()) {
+        this._recomputeRestPositions(true);
+        this._applyAnimationGate();
+      } else {
+        this._applyStaticLayout(true);
+      }
     };
     // Visibility tracking: pause every recurring animation (physics loop
     // AND the SVG `<animateMotion>` particles) whenever the card is not
@@ -429,6 +528,11 @@ class SolarChargeCard extends HTMLElement {
     // We only stop retrying once we actually found Solar Charge entities
     // (detected !== null). A subsequent setConfig (user edited YAML)
     // clears this flag.
+    const resolvedMode = resolveModeSelectEntity(this._hass, target.mode_entity);
+    if (resolvedMode && target.mode_entity !== resolvedMode) {
+      target.mode_entity = resolvedMode;
+      changed = true;
+    }
     this._enriched = true;
     if (changed) {
       this._config = target;
@@ -551,11 +655,31 @@ class SolarChargeCard extends HTMLElement {
     this._setSvgAnimationsPaused(true);
   }
 
+  // User-facing toggle: `animations: false` keeps balloons at their
+  // computed rest positions with static wires (no rAF loop, no flow dots).
+  // Omitted or any value other than literal `false` → animations on.
+  _animationsEnabled() {
+    return this._config?.animations !== false;
+  }
+
+  // Place every balloon at its rest anchor and refresh wire paths once.
+  // Used on first paint, on resize, and whenever animations are off.
+  _applyStaticLayout(preserveDraggedRest = false) {
+    this._recomputeRestPositions(preserveDraggedRest);
+    this._sim.nodes.forEach((s) => this._positionNode(s));
+    if (this._flowState) this._drawConnections();
+  }
+
   // Combined gate: decides whether the rAF physics loop should run AND
   // whether the SVG flow particles should keep ticking. The card is
   // "live" only when it's both inside the viewport and on the active
-  // browser tab.
+  // browser tab — and only when the user has not disabled animations.
   _applyAnimationGate() {
+    if (!this._animationsEnabled()) {
+      this._stopSimLoop();
+      this._setSvgAnimationsPaused(true);
+      return;
+    }
     const live = !!(this._intersecting && this._pageVisible);
     if (live) {
       this._setSvgAnimationsPaused(false);
@@ -617,13 +741,18 @@ class SolarChargeCard extends HTMLElement {
           <div class="nodes">
             ${descriptors.map((d) => this._nodeHTML(d)).join("")}
           </div>
-          <div class="hint">Trascina i balloon per riposizionarli</div>
+          <div class="hint">${this._animationsEnabled() ? "Trascina i balloon per riposizionarli" : "Posizioni statiche — animazioni disattivate"}</div>
         </div>
         ${this._boostBarHTML()}
       </ha-card>
     `;
 
     this._mounted = true;
+    if (this.shadowRoot.querySelector("ha-card")) {
+      this.shadowRoot
+        .querySelector("ha-card")
+        .classList.toggle("animations-off", !this._animationsEnabled());
+    }
     // Each step is independently guarded so a failure in any of them
     // never prevents the next one from running. The picker tile in
     // particular has very tight initial dimensions and timing, and we
@@ -814,14 +943,16 @@ class SolarChargeCard extends HTMLElement {
     });
     this._sim.nodes = next;
     this._sim.idleFrames = 0;
-    // Immediately place balloons at their rest positions (using a
-    // fallback size if the stage isn't laid out yet). A deferred rAF
-    // then re-runs once real dimensions exist; any later resize is
-    // handled by ResizeObserver in `_observeResize`.
+    if (!this._animationsEnabled()) {
+      this._applyStaticLayout(false);
+      requestAnimationFrame(() => this._applyStaticLayout(true));
+      return;
+    }
+    // Animated path: place balloons then run the physics integrator.
     this._recomputeRestPositions(false);
     requestAnimationFrame(() => {
       this._recomputeRestPositions(true);
-      this._startSimLoop();
+      this._applyAnimationGate();
     });
   }
 
@@ -902,6 +1033,7 @@ class SolarChargeCard extends HTMLElement {
   }
 
   _startSimLoop() {
+    if (!this._animationsEnabled()) return;
     // Visibility gate: never spin the rAF loop while the card is off
     // screen / in a backgrounded tab, even if something asks for a
     // refresh (drag, resize, hass tick). Saves CPU on slow tablets and
@@ -1127,7 +1259,11 @@ class SolarChargeCard extends HTMLElement {
       state.pos.x = x;
       state.pos.y = y;
       this._positionNode(state);
-      this._startSimLoop();
+      if (this._animationsEnabled()) {
+        this._startSimLoop();
+      } else {
+        this._updateWireGeometry();
+      }
     };
     const cleanup = () => {
       el.removeEventListener("pointermove", onMove);
@@ -1147,7 +1283,11 @@ class SolarChargeCard extends HTMLElement {
             /* ignore */
           }
         }
-        this._startSimLoop();
+        if (this._animationsEnabled()) {
+          this._startSimLoop();
+        } else {
+          this._updateWireGeometry();
+        }
       }
       cleanup();
     };
@@ -1237,8 +1377,9 @@ class SolarChargeCard extends HTMLElement {
     // the standalone `solar-charge-mode-card`. We toggle a global `manual`
     // class on the host so the rest of the UI can dim itself out.
     let currentMode = "";
-    if (c.mode_entity) {
-      currentMode = stateStr(this._hass, c.mode_entity);
+    const modeEntity = resolveModeSelectEntity(this._hass, c.mode_entity);
+    if (modeEntity) {
+      currentMode = currentModeFromEntity(this._hass, modeEntity);
       this.shadowRoot.querySelectorAll(".modes .mode-chip").forEach((btn) => {
         btn.classList.toggle("active", btn.dataset.value === currentMode);
       });
@@ -1443,7 +1584,9 @@ class SolarChargeCard extends HTMLElement {
       svg.appendChild(base);
     });
 
-    // Animated flow particles on active wires
+    // Animated flow particles on active wires (skipped when animations: false)
+    if (!this._animationsEnabled()) return;
+
     wires.forEach((w) => {
       if (!w.active) return;
       const circle = document.createElementNS(ns, "circle");
@@ -1489,8 +1632,12 @@ class SolarChargeCard extends HTMLElement {
     const stage = this.shadowRoot.querySelector(".stage");
     if (!stage) return;
     this._resizeObserver = new ResizeObserver(() => {
-      this._recomputeRestPositions(true);
-      this._startSimLoop();
+      if (this._animationsEnabled()) {
+        this._recomputeRestPositions(true);
+        this._applyAnimationGate();
+      } else {
+        this._applyStaticLayout(true);
+      }
     });
     this._resizeObserver.observe(stage);
     window.addEventListener("resize", this._onResize);
@@ -1512,32 +1659,9 @@ class SolarChargeCard extends HTMLElement {
     const c = this._config;
     try {
       if (action === "mode") {
-        // Same dual-strategy as the standalone mode card: try the
-        // configured `select` entity first, fall back to the integration's
-        // dedicated `solar_charge.set_mode` service if anything goes wrong.
         const value = btn.dataset.value;
-        let ok = false;
-        if (c.mode_entity) {
-          try {
-            await this._hass.callService("select", "select_option", {
-              entity_id: c.mode_entity,
-              option: value,
-            });
-            ok = true;
-          } catch (err) {
-            // eslint-disable-next-line no-console
-            console.warn(
-              "[solar-charge-card] mode chip select.select_option failed, " +
-                "falling back to solar_charge.set_mode:",
-              err
-            );
-          }
-        }
-        if (!ok) {
-          await this._hass.callService("solar_charge", "set_mode", {
-            mode: value,
-          });
-        }
+        const modeEntity = resolveModeSelectEntity(this._hass, c.mode_entity);
+        await applyBalancingMode(this._hass, modeEntity, value);
       } else if (action === "boost-battery" && c.boost_battery_entity) {
         await this._hass.callService("switch", "toggle", {
           entity_id: c.boost_battery_entity,
@@ -1860,6 +1984,13 @@ class SolarChargeCardEditor extends HTMLElement {
         "invert_grid",
         "Invert grid sign",
         "Enable if your grid sensor is positive when exporting / negative when importing.",
+        false,
+      ],
+      [
+        "animations",
+        "Balloon physics and energy-flow animation",
+        "Disable for static balloon positions and wires only (less CPU on tablets).",
+        true,
       ],
     ];
     this.shadowRoot.innerHTML = `
@@ -1887,10 +2018,14 @@ class SolarChargeCardEditor extends HTMLElement {
           .join("")}
         ${booleans
           .map(
-            ([k, lbl, hint]) => `
+            ([k, lbl, hint, defaultOn]) => `
           <label style="flex-direction: row; align-items: center; gap: 8px;">
-            <input type="checkbox" data-key="${k}" data-type="bool" ${
-              this._config[k] ? "checked" : ""
+            <input type="checkbox" data-key="${k}" data-type="bool" data-default-on="${
+              defaultOn ? "true" : ""
+            }" ${
+              (defaultOn ? this._config[k] !== false : !!this._config[k])
+                ? "checked"
+                : ""
             } />
             <span>${lbl}</span>
           </label>
@@ -1921,8 +2056,15 @@ batteries:
         const isBool = ev.target.dataset.type === "bool";
         const next = { ...this._config };
         if (isBool) {
-          if (ev.target.checked) next[key] = true;
-          else delete next[key];
+          const defaultOn = ev.target.dataset.defaultOn === "true";
+          if (defaultOn) {
+            if (ev.target.checked) delete next[key];
+            else next[key] = false;
+          } else if (ev.target.checked) {
+            next[key] = true;
+          } else {
+            delete next[key];
+          }
         } else {
           const value = ev.target.value;
           if (value === "") delete next[key];
@@ -1961,19 +2103,9 @@ class SolarChargeModeCard extends HTMLElement {
   }
 
   static async getStubConfig(hass /* , entities, entitiesFallback */) {
-    const fallback = {
-      title: "Modalità di carica",
-      mode_entity: "select.solar_charge_balancing_mode",
-    };
-    try {
-      const registry = hass?.entities || {};
-      const hit = Object.values(registry).find(
-        (e) => e && e.platform === "solar_charge" && /_mode$/.test(e.unique_id || "")
-      );
-      if (hit?.entity_id) fallback.mode_entity = hit.entity_id;
-    } catch (_) {
-      /* ignore */
-    }
+    const fallback = { title: "Modalità di carica" };
+    const resolved = resolveModeSelectEntity(hass, null);
+    if (resolved) fallback.mode_entity = resolved;
     return fallback;
   }
 
@@ -1985,14 +2117,7 @@ class SolarChargeModeCard extends HTMLElement {
     if (!config) throw new Error("Invalid configuration");
     this._config = { ...config };
     this._enriched = false;
-    if (!this._config.mode_entity) {
-      this._config.mode_entity = "select.solar_charge_balancing_mode";
-      // eslint-disable-next-line no-console
-      console.info(
-        "[solar-charge-mode-card] mode_entity not set in YAML, defaulting to",
-        this._config.mode_entity
-      );
-    }
+    this._enrichLastTry = 0;
     this._mounted = false;
     try {
       if (this._hass) this._enrichConfigFromHass();
@@ -2004,69 +2129,40 @@ class SolarChargeModeCard extends HTMLElement {
     }
   }
 
-  // Resolves `mode_entity` to a real entity id by:
-  //   1. honouring an explicit YAML value when it actually exists in hass,
-  //   2. otherwise picking from the auto-detected solar_charge config
-  //      (`autoConfigFromHass` reads the integration's entity registry,
-  //      so it works even when the user renamed the entity), and
-  //   3. as a last resort scanning hass.states for any select whose id
-  //      contains `balancing_mode`.
-  // The card uses the SAME helper that the graph card uses for its own
-  // enrichment, so both end up pointing to the same select even when
-  // the integration's entry slug is non-default.
+  // Points `mode_entity` at the integration's mode select (registry or
+  // renamed entity id such as select.solar_charge_balancer_modalita_di_bilanciamento).
   _enrichConfigFromHass() {
     if (!this._hass || !this._config) return false;
     if (this._enriched) return false;
     if (!this._enrichRetryAllowed()) return false;
-    const cfgId = this._config.mode_entity;
-    const states = this._hass.states || {};
-    // 1) Already valid?
-    if (cfgId && states[cfgId]) {
-      this._enriched = true;
-      return false;
-    }
-    // 2) Walk the integration registry.
-    const detected = autoConfigFromHass(this._hass);
-    if (detected?.mode_entity && states[detected.mode_entity]) {
-      this._config = { ...this._config, mode_entity: detected.mode_entity };
-      this._enriched = true;
-      // eslint-disable-next-line no-console
-      console.info(
-        "[solar-charge-mode-card] mode_entity auto-resolved to",
-        detected.mode_entity
-      );
-      return true;
-    }
-    // 3) Loose match on hass.states.
-    const candidate = Object.keys(states).find(
-      (id) =>
-        id.startsWith("select.") &&
-        (id === "select.solar_charge_balancing_mode" ||
-          id.endsWith("_balancing_mode") ||
-          id.includes("balancing_mode"))
+    const resolved = resolveModeSelectEntity(
+      this._hass,
+      this._config.mode_entity
     );
-    if (candidate) {
-      this._config = { ...this._config, mode_entity: candidate };
-      this._enriched = true;
+    if (!resolved) return false;
+    const changed = this._config.mode_entity !== resolved;
+    if (changed) {
+      this._config = { ...this._config, mode_entity: resolved };
       // eslint-disable-next-line no-console
       console.info(
-        "[solar-charge-mode-card] mode_entity loose-matched to",
-        candidate
+        "[solar-charge-mode-card] mode_entity resolved to",
+        resolved
       );
-      return true;
     }
-    return false;
+    this._enriched = true;
+    return changed;
   }
 
-  // Backwards-compatible thin wrapper used inside _onClick / _update.
   _resolveModeEntity() {
-    const id = this._config?.mode_entity;
-    const states = this._hass?.states || {};
-    if (id && states[id]) return id;
-    // Try a fresh enrichment in case states updated since last setConfig.
-    this._enriched = false;
-    this._enrichConfigFromHass();
-    return this._config?.mode_entity || null;
+    if (!this._hass) return this._config?.mode_entity || null;
+    const resolved = resolveModeSelectEntity(
+      this._hass,
+      this._config?.mode_entity
+    );
+    if (resolved && resolved !== this._config?.mode_entity) {
+      this._config = { ...this._config, mode_entity: resolved };
+    }
+    return resolved;
   }
 
   set hass(hass) {
@@ -2115,18 +2211,27 @@ class SolarChargeModeCard extends HTMLElement {
       </style>
       <ha-card>
         <div class="t">Solar Charge Mode Selector</div>
-        <div class="h">Configura <code>mode_entity</code> (es. <code>select.solar_charge_balancing_mode</code>).</div>
+        <div class="h">Configura <code>mode_entity</code> (es. <code>select.solar_charge_balancer_modalita_di_bilanciamento</code>) oppure attendi il rilevamento automatico.</div>
       </ha-card>
     `;
     this._mounted = true;
   }
 
   _visibleModes() {
+    const entityId = this._resolveModeEntity();
+    const opts =
+      entityId && this._hass
+        ? selectOptionsForEntity(this._hass, entityId)
+        : null;
     const list = this._config?.modes;
-    if (Array.isArray(list) && list.length) {
-      return MODE_BUTTONS.filter((m) => list.includes(m.value));
+    let buttons =
+      Array.isArray(list) && list.length
+        ? MODE_BUTTONS.filter((m) => list.includes(m.value))
+        : MODE_BUTTONS;
+    if (opts?.length) {
+      buttons = buttons.filter((m) => opts.includes(m.value));
     }
-    return MODE_BUTTONS;
+    return buttons;
   }
 
   _render() {
@@ -2161,10 +2266,13 @@ class SolarChargeModeCard extends HTMLElement {
   _update() {
     if (!this._mounted || !this._hass) return;
     const entityId = this._resolveModeEntity();
-    const current = entityId ? stateStr(this._hass, entityId) : "";
+    const current = entityId ? currentModeFromEntity(this._hass, entityId) : "";
     this.shadowRoot.querySelectorAll(".chip").forEach((btn) => {
       btn.classList.toggle("active", btn.dataset.value === current);
+      btn.disabled = !entityId;
     });
+    const card = this.shadowRoot.querySelector("ha-card");
+    if (card) card.classList.toggle("no-entity", !entityId);
   }
 
   async _onClick(ev) {
@@ -2172,59 +2280,26 @@ class SolarChargeModeCard extends HTMLElement {
     const value = btn.dataset.value;
     if (!this._hass || !value) return;
 
-    // Optimistic visual feedback: highlight the chip immediately so the
-    // user gets a response even while the service round-trips (or fails).
-    this.shadowRoot.querySelectorAll(".chip").forEach((b) => {
-      b.classList.toggle("active", b === btn);
-    });
-
     const entityId = this._resolveModeEntity();
-    let okVia = null;
-
-    // Strategy 1: drive the integration's `select` entity. This is the
-    // most natural path and shows up in the HA logbook as "user changed
-    // mode to X".
-    if (entityId) {
-      try {
-        await this._hass.callService("select", "select_option", {
-          entity_id: entityId,
-          option: value,
-        });
-        okVia = `select.select_option(${entityId}, ${value})`;
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn(
-          "[solar-charge-mode-card] select.select_option failed, will fall " +
-            "back to solar_charge.set_mode:",
-          err
-        );
-      }
+    if (!entityId) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[solar-charge-mode-card] mode select entity not found; set mode_entity in YAML"
+      );
+      return;
     }
 
-    // Strategy 2: call the integration's dedicated service. This bypasses
-    // any entity-id resolution problem and works even when the user has
-    // a slug-suffixed select.* id (e.g. select.solar_charge_casa_balancing_mode)
-    // that our regex didn't catch.
-    if (!okVia) {
-      try {
-        await this._hass.callService("solar_charge", "set_mode", {
-          mode: value,
-        });
-        okVia = `solar_charge.set_mode(${value})`;
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(
-          "[solar-charge-mode-card] both select.select_option and " +
-            "solar_charge.set_mode failed:",
-          err
-        );
-        // Roll back optimistic highlight to the actual current state
-        this._update();
-        return;
-      }
+    try {
+      const via = await applyBalancingMode(this._hass, entityId, value);
+      // eslint-disable-next-line no-console
+      console.info(`[solar-charge-mode-card] mode change OK via ${via}`);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-mode-card] mode change failed:", err);
+      this._update();
+      return;
     }
-    // eslint-disable-next-line no-console
-    console.info(`[solar-charge-mode-card] mode change OK via ${okVia}`);
+    this._update();
   }
 
   _styles() {
@@ -2292,6 +2367,8 @@ class SolarChargeModeCard extends HTMLElement {
         box-shadow: 0 0 14px -2px var(--chip-color);
       }
       .chip.active svg { filter: none; }
+      .chip:disabled { opacity: 0.45; cursor: not-allowed; }
+      ha-card.no-entity .strip { opacity: 0.5; }
       @media (max-width: 420px) {
         .chip span { display: none; }
         .chip { flex: 0 0 auto; padding: 10px; }
