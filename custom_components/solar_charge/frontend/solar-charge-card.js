@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.9";
+const CARD_VERSION = "0.12.10";
 
 // eslint-disable-next-line no-console
 console.info(
@@ -156,9 +156,23 @@ const fmtPercent = (v) => {
 // gets fully populated as soon as `hass` lands.
 // Returns `null` when no Solar Charge entities can be found.
 // ---------------------------------------------------------------------------
+function normalizeCardConfig(config) {
+  if (config && typeof config === "object" && !Array.isArray(config)) {
+    return config;
+  }
+  return {};
+}
+
+function entitiesRegistry(hass) {
+  const raw = hass?.entities;
+  if (!raw) return {};
+  if (raw instanceof Map) return Object.fromEntries(raw);
+  return raw;
+}
+
 function autoConfigFromHass(hass) {
   try {
-    const registry = hass?.entities || {};
+    const registry = entitiesRegistry(hass);
     const devices = hass?.devices || {};
     const scEntries = Object.values(registry).filter(
       (e) => e && e.platform === "solar_charge"
@@ -278,7 +292,7 @@ function isSolarChargeModeSelect(hass, entityId) {
   if (!entityId || !hass?.states?.[entityId]) return false;
   const st = hass.states[entityId];
   if (!entityId.startsWith("select.")) return false;
-  const ent = hass.entities?.[entityId];
+  const ent = entitiesRegistry(hass)[entityId];
   if (ent?.platform === "solar_charge") {
     const uid = ent.unique_id || "";
     if (uid.endsWith("_mode")) return true;
@@ -307,7 +321,7 @@ function resolveModeSelectEntity(hass, preferred) {
   ) {
     return detected.mode_entity;
   }
-  const registry = hass.entities || {};
+  const registry = entitiesRegistry(hass);
   const regHit = Object.values(registry).find(
     (e) =>
       e?.platform === "solar_charge" && (e.unique_id || "").endsWith("_mode")
@@ -321,7 +335,7 @@ function resolveModeSelectEntity(hass, preferred) {
 }
 
 function configEntryForEntity(hass, entityId) {
-  return hass?.entities?.[entityId]?.config_entry || null;
+  return entitiesRegistry(hass)[entityId]?.config_entry || null;
 }
 
 function currentModeFromEntity(hass, entityId) {
@@ -455,9 +469,15 @@ class SolarChargeCard extends HTMLElement {
       boost_battery_entity: "switch.solar_charge_boost_battery",
       chargers: [],
     };
-    const detected = autoConfigFromHass(hass);
-    if (!detected) return fallback;
-    return { title: "Solar Charge", ...detected };
+    try {
+      const detected = autoConfigFromHass(hass);
+      if (!detected) return fallback;
+      return { title: "Solar Charge", ...detected };
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-card] getStubConfig failed:", err);
+      return fallback;
+    }
   }
 
   // Merge any auto-detected entities into the user-supplied config without
@@ -548,14 +568,22 @@ class SolarChargeCard extends HTMLElement {
     return 6;
   }
 
+  getGridOptions() {
+    return {
+      columns: 6,
+      rows: 6,
+      min_columns: 3,
+      min_rows: 4,
+    };
+  }
+
   setConfig(config) {
-    if (!config) throw new Error("Invalid configuration");
-    this._config = { ...config };
-    this._mounted = false;
-    // Re-enable runtime enrichment: the user edited the YAML, give us a
-    // fresh chance to fill in the gaps from the integration registry.
-    this._enriched = false;
     try {
+      this._config = { ...normalizeCardConfig(config) };
+      this._mounted = false;
+      // Re-enable runtime enrichment: the user edited the YAML, give us a
+      // fresh chance to fill in the gaps from the integration registry.
+      this._enriched = false;
       // If hass is already available, top up the config with any entity
       // the user did not specify before doing the first paint.
       if (this._hass) this._enrichConfigFromHass();
@@ -565,11 +593,11 @@ class SolarChargeCard extends HTMLElement {
       // The graph will repopulate as soon as `set hass` arrives.
       this._render();
     } catch (err) {
-      // Never let setConfig throw up to Lovelace: the picker tile would
-      // otherwise spin forever with no rendered output. Fall back to a
-      // minimal static card so at least the tile is clickable.
+      // Never let setConfig throw up to Lovelace — HA 2026+ shows a generic
+      // "Configuration error" tile and hides the real message from users.
       // eslint-disable-next-line no-console
-      console.error("[solar-charge-card] render failed, using fallback:", err);
+      console.error("[solar-charge-card] setConfig failed, using fallback:", err);
+      this._config = { ...normalizeCardConfig(config) };
       this._renderFallback(err);
     }
   }
@@ -1959,8 +1987,14 @@ class SolarChargeCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { ...config };
-    this._render();
+    try {
+      this._config = { ...normalizeCardConfig(config) };
+      this._render();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-card-editor] setConfig failed:", err);
+      this._config = {};
+    }
   }
 
   set hass(hass) {
@@ -2104,8 +2138,13 @@ class SolarChargeModeCard extends HTMLElement {
 
   static async getStubConfig(hass /* , entities, entitiesFallback */) {
     const fallback = { title: "Modalità di carica" };
-    const resolved = resolveModeSelectEntity(hass, null);
-    if (resolved) fallback.mode_entity = resolved;
+    try {
+      const resolved = resolveModeSelectEntity(hass, null);
+      if (resolved) fallback.mode_entity = resolved;
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.warn("[solar-charge-mode-card] getStubConfig failed:", err);
+    }
     return fallback;
   }
 
@@ -2113,18 +2152,27 @@ class SolarChargeModeCard extends HTMLElement {
     return 2;
   }
 
+  getGridOptions() {
+    return {
+      columns: 6,
+      rows: 2,
+      min_columns: 3,
+      min_rows: 1,
+    };
+  }
+
   setConfig(config) {
-    if (!config) throw new Error("Invalid configuration");
-    this._config = { ...config };
-    this._enriched = false;
-    this._enrichLastTry = 0;
-    this._mounted = false;
     try {
+      this._config = { ...normalizeCardConfig(config) };
+      this._enriched = false;
+      this._enrichLastTry = 0;
+      this._mounted = false;
       if (this._hass) this._enrichConfigFromHass();
       this._render();
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("[solar-charge-mode-card] render failed:", err);
+      console.error("[solar-charge-mode-card] setConfig failed:", err);
+      this._config = { ...normalizeCardConfig(config) };
       this._renderFallback();
     }
   }
@@ -2389,8 +2437,14 @@ class SolarChargeModeCardEditor extends HTMLElement {
   }
 
   setConfig(config) {
-    this._config = { ...config };
-    this._render();
+    try {
+      this._config = { ...normalizeCardConfig(config) };
+      this._render();
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-mode-card-editor] setConfig failed:", err);
+      this._config = {};
+    }
   }
 
   set hass(hass) {

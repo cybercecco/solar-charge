@@ -9,6 +9,7 @@ from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.event import async_call_later
 import voluptuous as vol
 
 from .const import (
@@ -54,7 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 # querystring so browsers reload it after an integration update.
 FRONTEND_URL_BASE = "/solar_charge_static"
 FRONTEND_SCRIPT = "solar-charge-card.js"
-FRONTEND_CARD_VERSION = "0.12.9"
+FRONTEND_CARD_VERSION = "0.12.10"
 
 
 def _frontend_card_url() -> str:
@@ -93,7 +94,9 @@ async def _async_register_lovelace_resource(hass: HomeAssistant, url: str) -> bo
             )
             return False
 
-        if hasattr(resources, "async_load") and not getattr(resources, "loaded", True):
+        # HA 2026.5+ loads resources eagerly, but older paths may still
+        # call us before the collection is ready — always ensure load first.
+        if hasattr(resources, "async_load") and not getattr(resources, "loaded", False):
             await resources.async_load()
 
         items_iter = (
@@ -161,7 +164,19 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
 
     # 3) Persistent Lovelace resource (storage mode): this is what makes the
     #    card appear in the picker on dashboards that use the UI editor.
-    await _async_register_lovelace_resource(hass, url)
+    ok = await _async_register_lovelace_resource(hass, url)
+    if not ok:
+        # Lovelace may not be ready yet (common right after a HA core update).
+        retries = {"count": 0}
+
+        async def _retry_register(_now) -> None:
+            retries["count"] += 1
+            if await _async_register_lovelace_resource(hass, url):
+                return
+            if retries["count"] < 24:
+                async_call_later(hass, 5, _retry_register)
+
+        async_call_later(hass, 5, _retry_register)
 
     hass.data.setdefault(DOMAIN, {})["_frontend_registered"] = True
     _LOGGER.info(
@@ -187,6 +202,9 @@ BOOST_SCHEMA = vol.Schema(
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     hass.data.setdefault(DOMAIN, {})
+    # Serve the JS as soon as the integration package loads, not only when
+    # a config entry succeeds — cards must work even during startup races.
+    await _async_register_frontend(hass)
     return True
 
 
