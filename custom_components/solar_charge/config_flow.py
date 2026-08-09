@@ -161,12 +161,35 @@ def _status_entity_selector() -> selector.EntitySelector:
 
 
 def _notify_service_selector() -> selector.SelectSelector:
+    # custom_value remains so users can type notify.mobile_app_xxx, but
+    # values are validated in async_step_notifications / notify.py.
     return selector.SelectSelector(
         selector.SelectSelectorConfig(
-            options=[], multiple=True, custom_value=True,
+            options=[
+                {"value": "persistent_notification.create", "label": "persistent_notification"},
+                {"value": "notify.notify", "label": "notify.notify"},
+            ],
+            multiple=True,
+            custom_value=True,
             mode=selector.SelectSelectorMode.DROPDOWN,
         )
     )
+
+
+def _sanitize_notify_targets(targets: list[Any] | None) -> list[str]:
+    """Keep only notify.* / persistent_notification.* targets."""
+    from .notify import parse_notify_target
+
+    cleaned: list[str] = []
+    for raw in targets or []:
+        if not isinstance(raw, str):
+            continue
+        parsed = parse_notify_target(raw)
+        if parsed is None:
+            continue
+        domain, service = parsed
+        cleaned.append(f"{domain}.{service}")
+    return cleaned
 
 
 # ---------------------------------------------------------------------------
@@ -724,6 +747,10 @@ class SolarChargeOptionsFlow(OptionsFlow):
 
     async def async_step_notifications(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
+            user_input = dict(user_input)
+            user_input[CONF_NOTIFY_TARGETS] = _sanitize_notify_targets(
+                user_input.get(CONF_NOTIFY_TARGETS)
+            )
             self._data.update(user_input)
             return await self.async_step_init()
         return self.async_show_form(step_id="notifications", data_schema=_schema_notifications(self._data))
@@ -780,6 +807,27 @@ class SolarChargeOptionsFlow(OptionsFlow):
 
         if user_input is not None:
             user_input[CHARGER_PHASES] = int(user_input[CHARGER_PHASES])
+            min_c = int(user_input.get(CHARGER_MIN_CURRENT) or 0)
+            max_c = int(user_input.get(CHARGER_MAX_CURRENT) or 0)
+            if min_c > max_c:
+                return self.async_show_form(
+                    step_id="charger_form",
+                    data_schema=_schema_charger({**defaults, **user_input}),
+                    errors={"base": "invalid_entity"},
+                )
+            if not any(
+                user_input.get(k)
+                for k in (
+                    CHARGER_SET_CURRENT_ENTITY,
+                    CHARGER_SET_POWER_ENTITY,
+                    CHARGER_SWITCH_ENTITY,
+                )
+            ):
+                return self.async_show_form(
+                    step_id="charger_form",
+                    data_schema=_schema_charger({**defaults, **user_input}),
+                    errors={"base": "invalid_entity"},
+                )
             if self._charger_edit_idx is None:
                 user_input[CHARGER_ID] = uuid.uuid4().hex
                 chargers.append(user_input)

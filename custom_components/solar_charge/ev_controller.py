@@ -6,6 +6,7 @@ hysteresis prevents chattering.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -25,6 +26,8 @@ _LOGGER = logging.getLogger(__name__)
 
 _CURRENT_EPSILON = 0.5  # A
 _POWER_EPSILON = 100.0  # W
+_SWITCH_DOMAINS = frozenset({"switch", "input_boolean"})
+_NUMBER_DOMAINS = frozenset({"number", "input_number"})
 
 
 class EvController:
@@ -39,6 +42,7 @@ class EvController:
         self.coordinator = coordinator
         self._cfg: dict[str, Any] = {**entry.data, **(entry.options or {})}
         self._unsub = None
+        self._apply_task: asyncio.Task | None = None
         self._last_current: dict[str, float] = {}
         self._last_power: dict[str, float] = {}
         self._last_switch: dict[str, bool] = {}
@@ -55,6 +59,9 @@ class EvController:
         if self._unsub is not None:
             self._unsub()
             self._unsub = None
+        if self._apply_task and not self._apply_task.done():
+            self._apply_task.cancel()
+            self._apply_task = None
 
     # ------------------------------------------------------------------
     @callback
@@ -62,9 +69,21 @@ class EvController:
         snap: FlowSnapshot | None = self.coordinator.data
         if snap is None:
             return
-        self.hass.async_create_task(self._apply(snap))
+        # Serialize applies: cancel any in-flight write cycle so overlapping
+        # coordinator ticks cannot chatter switches/numbers.
+        if self._apply_task and not self._apply_task.done():
+            self._apply_task.cancel()
+        self._apply_task = self.hass.async_create_task(self._apply(snap))
 
     async def _apply(self, snap: FlowSnapshot) -> None:
+        try:
+            await self._apply_inner(snap)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("EV apply failed: %s", err)
+
+    async def _apply_inner(self, snap: FlowSnapshot) -> None:
         # Manual mode: stay out of the way completely.
         if snap.manual:
             self._prev_manual = True
@@ -105,16 +124,19 @@ class EvController:
         # Enable/disable switch with hysteresis
         if switch_entity and self._last_switch.get(ch.id) != should_charge:
             service = "turn_on" if should_charge else "turn_off"
-            domain = switch_entity.split(".")[0]
-            try:
-                await self.hass.services.async_call(
-                    domain, service, {"entity_id": switch_entity}, blocking=False
-                )
+            if await self._call_switch(switch_entity, service):
                 self._last_switch[ch.id] = should_charge
-            except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Failed to %s %s: %s", service, switch_entity, err)
 
         if not should_charge:
+            # Fail-safe stop: always drive current/power to 0 even when no
+            # enable switch is configured (common for Tuya / OEM number-only
+            # wallboxes that would otherwise keep the last setpoint).
+            if current_entity:
+                await self._set_number(current_entity, 0, blocking=True)
+                self._last_current[ch.id] = 0.0
+            if power_entity:
+                await self._set_number(power_entity, 0, blocking=True)
+                self._last_power[ch.id] = 0.0
             return
 
         if current_entity:
@@ -131,11 +153,46 @@ class EvController:
                 await self._set_number(power_entity, watts)
                 self._last_power[ch.id] = watts
 
-    async def _set_number(self, entity_id: str, value: float) -> None:
-        domain = entity_id.split(".")[0]
+    async def _call_switch(self, entity_id: str, service: str) -> bool:
+        if not isinstance(entity_id, str) or "." not in entity_id:
+            _LOGGER.warning("Ignoring invalid switch entity_id: %s", entity_id)
+            return False
+        domain = entity_id.split(".", 1)[0]
+        if domain not in _SWITCH_DOMAINS:
+            _LOGGER.warning(
+                "Refusing to call %s.%s on non-switch entity %s",
+                domain,
+                service,
+                entity_id,
+            )
+            return False
         try:
             await self.hass.services.async_call(
-                domain, "set_value", {"entity_id": entity_id, "value": value}, blocking=False
+                domain, service, {"entity_id": entity_id}, blocking=False
+            )
+            return True
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Failed to %s %s: %s", service, entity_id, err)
+            return False
+
+    async def _set_number(
+        self, entity_id: str, value: float, *, blocking: bool = False
+    ) -> None:
+        if not isinstance(entity_id, str) or "." not in entity_id:
+            _LOGGER.warning("Ignoring invalid number entity_id: %s", entity_id)
+            return
+        domain = entity_id.split(".", 1)[0]
+        if domain not in _NUMBER_DOMAINS:
+            _LOGGER.warning(
+                "Refusing to set_value on non-number entity %s", entity_id
+            )
+            return
+        try:
+            await self.hass.services.async_call(
+                domain,
+                "set_value",
+                {"entity_id": entity_id, "value": value},
+                blocking=blocking,
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to set %s = %s: %s", entity_id, value, err)

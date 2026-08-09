@@ -10,7 +10,22 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.10";
+const CARD_VERSION = "0.12.12";
+
+/** Escape text for safe interpolation into HTML bodies. */
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/** Escape for double-quoted HTML attributes. */
+function escapeAttr(value) {
+  return escapeHtml(value).replace(/`/g, "&#96;");
+}
 
 // eslint-disable-next-line no-console
 console.info(
@@ -648,7 +663,7 @@ class SolarChargeCard extends HTMLElement {
         <div class="title">Solar Charge Card</div>
         <div class="version">v${CARD_VERSION} — modalità compatibile</div>
         <div class="hint">Configura le entità nell'editor o in YAML (pv_entity, grid_entity, battery_entity, ecc.) per abilitare il grafo animato.</div>
-        ${msg ? `<pre>${msg.replace(/</g, "&lt;")}</pre>` : ""}
+        ${msg ? `<pre>${escapeHtml(msg)}</pre>` : ""}
       </ha-card>
     `;
     this._mounted = true;
@@ -761,7 +776,11 @@ class SolarChargeCard extends HTMLElement {
       <style>${this._styles()}</style>
       <ha-card>
         <div class="header">
-          ${this._config.title ? `<div class="title">${this._config.title}</div>` : '<div class="title"></div>'}
+          ${
+            this._config.title
+              ? `<div class="title">${escapeHtml(this._config.title)}</div>`
+              : '<div class="title"></div>'
+          }
           ${this._modeChipsHTML()}
         </div>
         <div class="stage">
@@ -769,7 +788,11 @@ class SolarChargeCard extends HTMLElement {
           <div class="nodes">
             ${descriptors.map((d) => this._nodeHTML(d)).join("")}
           </div>
-          <div class="hint">${this._animationsEnabled() ? "Trascina i balloon per riposizionarli" : "Posizioni statiche — animazioni disattivate"}</div>
+          <div class="hint">${
+            this._animationsEnabled()
+              ? "Trascina i balloon per riposizionarli"
+              : "Posizioni statiche — animazioni disattivate"
+          }</div>
         </div>
         ${this._boostBarHTML()}
       </ha-card>
@@ -870,7 +893,7 @@ class SolarChargeCard extends HTMLElement {
     if (d.pinned) classes.push("pinned");
     return `
       <div class="${classes.join(" ")}"
-           data-kind="${d.kind}" data-key="${d.key}">
+           data-kind="${escapeAttr(d.kind)}" data-key="${escapeAttr(d.key)}">
         <div class="circle">
           <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
             <path d="${d.icon}"/>
@@ -878,7 +901,7 @@ class SolarChargeCard extends HTMLElement {
           <div class="value"></div>
           ${d.bidirectional ? '<div class="flow"></div>' : ""}
         </div>
-        <div class="label">${d.label}</div>
+        <div class="label">${escapeHtml(d.label)}</div>
       </div>
     `;
   }
@@ -894,11 +917,11 @@ class SolarChargeCard extends HTMLElement {
         ${MODE_BUTTONS.map(
           (m) => `
           <button class="chip mode-chip" data-action="mode"
-                  data-value="${m.value}"
-                  style="--chip-color: ${m.color}"
-                  title="${m.label}" aria-label="${m.label}">
+                  data-value="${escapeAttr(m.value)}"
+                  style="--chip-color: ${escapeAttr(m.color)}"
+                  title="${escapeAttr(m.label)}" aria-label="${escapeAttr(m.label)}">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${m.icon}"/></svg>
-            <span>${m.label}</span>
+            <span>${escapeHtml(m.label)}</span>
           </button>`
         ).join("")}
       </div>
@@ -913,9 +936,9 @@ class SolarChargeCard extends HTMLElement {
     if (!boostableCharges.length && !hasBattery) return "";
 
     const btn = (cls, action, attrs, icon, label) => `
-      <button class="boost-btn ${cls}" data-action="${action}" ${attrs}>
+      <button class="boost-btn ${cls}" data-action="${escapeAttr(action)}" ${attrs}>
         <svg viewBox="0 0 24 24"><path d="${icon}"/></svg>
-        <span>${label}</span>
+        <span>${escapeHtml(label)}</span>
       </button>`;
 
     const boltIcon = "M13 2L4.5 13h6l-1 9 8.5-11h-6l1-9z";
@@ -2046,7 +2069,9 @@ class SolarChargeCardEditor extends HTMLElement {
             ([k, lbl]) => `
           <label>
             <span>${lbl}</span>
-            <input data-key="${k}" value="${this._config[k] ?? ""}" />
+            <input data-key="${escapeAttr(k)}" value="${escapeAttr(
+              this._config[k] ?? ""
+            )}" />
           </label>`
           )
           .join("")}
@@ -2054,16 +2079,16 @@ class SolarChargeCardEditor extends HTMLElement {
           .map(
             ([k, lbl, hint, defaultOn]) => `
           <label style="flex-direction: row; align-items: center; gap: 8px;">
-            <input type="checkbox" data-key="${k}" data-type="bool" data-default-on="${
+            <input type="checkbox" data-key="${escapeAttr(k)}" data-type="bool" data-default-on="${
               defaultOn ? "true" : ""
             }" ${
               (defaultOn ? this._config[k] !== false : !!this._config[k])
                 ? "checked"
                 : ""
             } />
-            <span>${lbl}</span>
+            <span>${escapeHtml(lbl)}</span>
           </label>
-          <div class="hint" style="margin-top:-6px;">${hint}</div>`
+          <div class="hint" style="margin-top:-6px;">${escapeHtml(hint)}</div>`
           )
           .join("")}
         <div class="hint">
@@ -2289,15 +2314,15 @@ class SolarChargeModeCard extends HTMLElement {
     this.shadowRoot.innerHTML = `
       <style>${this._styles()}</style>
       <ha-card>
-        ${title ? `<div class="title">${title}</div>` : ""}
+        ${title ? `<div class="title">${escapeHtml(title)}</div>` : ""}
         <div class="strip">
           ${modes
             .map(
               (m) => `
-            <button class="chip" data-value="${m.value}"
-              style="--chip-color: ${m.color}" aria-label="${m.label}">
+            <button class="chip" data-value="${escapeAttr(m.value)}"
+              style="--chip-color: ${escapeAttr(m.color)}" aria-label="${escapeAttr(m.label)}">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="${m.icon}"/></svg>
-              <span>${m.label}</span>
+              <span>${escapeHtml(m.label)}</span>
             </button>`
             )
             .join("")}

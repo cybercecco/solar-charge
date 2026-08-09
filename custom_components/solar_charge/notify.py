@@ -27,6 +27,36 @@ from .coordinator import FlowSnapshot, SolarChargeCoordinator
 _LOGGER = logging.getLogger(__name__)
 _OVERCONSUMPTION_COOLDOWN = timedelta(minutes=5)
 _CAP_COOLDOWN = timedelta(minutes=2)
+# Only these domains may be invoked from notify_targets. Free-text targets
+# that resolve to other domains (e.g. homeassistant.restart) are rejected.
+_ALLOWED_NOTIFY_DOMAINS = frozenset({"notify", "persistent_notification"})
+
+
+def parse_notify_target(target: str) -> tuple[str, str] | None:
+    """Return (domain, service) if the target is an allowed notify channel."""
+    raw = (target or "").strip()
+    if not raw:
+        return None
+    if "." in raw:
+        domain, service = raw.split(".", 1)
+    elif raw == "persistent_notification":
+        domain, service = "persistent_notification", "create"
+    else:
+        domain, service = "notify", raw
+    domain = domain.strip()
+    service = service.strip()
+    if not domain or not service:
+        return None
+    if domain not in _ALLOWED_NOTIFY_DOMAINS:
+        return None
+    # persistent_notification only exposes create / dismiss / …
+    if domain == "persistent_notification" and service not in {
+        "create",
+        "dismiss",
+        "dismiss_all",
+    }:
+        return None
+    return domain, service
 
 
 class NotificationDispatcher:
@@ -80,7 +110,9 @@ class NotificationDispatcher:
 
         notify_overconsumption = self._cfg.get(CONF_NOTIFY_ON_OVERCONSUMPTION, True)
         now = dt_util.utcnow()
-        total_load = snap.house_power + snap.ev_power_total
+        # House power already includes EV draw in the residential topology
+        # used by the coordinator — do not add ev_power_total again.
+        total_load = snap.house_power
         cap = self._cfg.get(CONF_MAX_HOUSEHOLD_POWER_W, 0) or 0
 
         # Over-consumption (independent absolute threshold)
@@ -165,17 +197,42 @@ class NotificationDispatcher:
             await self.hass.services.async_call(
                 "persistent_notification",
                 "create",
-                {"title": title, "message": message, "notification_id": f"solar_charge_{tag}"},
+                {
+                    "title": title,
+                    "message": message,
+                    "notification_id": f"solar_charge_{tag}",
+                },
                 blocking=False,
             )
             return
 
         for target in targets:
-            if "." in target:
-                domain, service = target.split(".", 1)
-            else:
-                domain, service = "notify", target
+            parsed = parse_notify_target(target)
+            if parsed is None:
+                _LOGGER.warning(
+                    "Ignoring notify target %r (only notify.* / "
+                    "persistent_notification.* are allowed)",
+                    target,
+                )
+                continue
+            domain, service = parsed
             try:
-                await self.hass.services.async_call(domain, service, payload, blocking=False)
+                if domain == "persistent_notification" and service == "create":
+                    await self.hass.services.async_call(
+                        domain,
+                        service,
+                        {
+                            "title": title,
+                            "message": message,
+                            "notification_id": f"solar_charge_{tag}",
+                        },
+                        blocking=False,
+                    )
+                else:
+                    await self.hass.services.async_call(
+                        domain, service, payload, blocking=False
+                    )
             except Exception as err:  # noqa: BLE001
-                _LOGGER.warning("Notification to %s.%s failed: %s", domain, service, err)
+                _LOGGER.warning(
+                    "Notification to %s.%s failed: %s", domain, service, err
+                )

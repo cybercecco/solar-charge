@@ -55,7 +55,10 @@ _LOGGER = logging.getLogger(__name__)
 # querystring so browsers reload it after an integration update.
 FRONTEND_URL_BASE = "/solar_charge_static"
 FRONTEND_SCRIPT = "solar-charge-card.js"
-FRONTEND_CARD_VERSION = "0.12.11"
+FRONTEND_CARD_VERSION = "0.12.12"
+# Keep frontend registration flags out of hass.data[DOMAIN] so entry bundles
+# (keyed by entry_id) are never mixed with booleans / metadata.
+_FRONTEND_DATA_KEY = f"{DOMAIN}_frontend"
 
 
 def _frontend_card_url() -> str:
@@ -137,7 +140,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
       2. extra JS URL  -> included in every frontend page (YAML-mode fallback).
       3. Lovelace resource -> persistent entry shown in the *Add card* picker.
     """
-    if hass.data.get(DOMAIN, {}).get("_frontend_registered"):
+    if hass.data.get(_FRONTEND_DATA_KEY, {}).get("registered"):
         return
 
     frontend_dir = str(Path(__file__).parent / "frontend")
@@ -178,7 +181,7 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
 
         async_call_later(hass, 5, _retry_register)
 
-    hass.data.setdefault(DOMAIN, {})["_frontend_registered"] = True
+    hass.data.setdefault(_FRONTEND_DATA_KEY, {})["registered"] = True
     _LOGGER.info(
         "Solar Charge Lovelace card served at %s (v%s)", url, FRONTEND_CARD_VERSION
     )
@@ -348,10 +351,21 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     def _resolve(call: ServiceCall) -> list[SolarChargeCoordinator]:
         entry_id = call.data.get("entry_id")
-        bundles = hass.data.get(DOMAIN, {})
-        if entry_id and entry_id in bundles:
-            return [bundles[entry_id]["coordinator"]]
-        return [b["coordinator"] for b in bundles.values()]
+        bundles = hass.data.get(DOMAIN, {}) or {}
+
+        def _coordinators() -> list[SolarChargeCoordinator]:
+            out: list[SolarChargeCoordinator] = []
+            for bundle in bundles.values():
+                if isinstance(bundle, dict) and "coordinator" in bundle:
+                    out.append(bundle["coordinator"])
+            return out
+
+        if entry_id:
+            bundle = bundles.get(entry_id)
+            if isinstance(bundle, dict) and "coordinator" in bundle:
+                return [bundle["coordinator"]]
+            return []
+        return _coordinators()
 
     async def _set_mode(call: ServiceCall) -> None:
         for coord in _resolve(call):

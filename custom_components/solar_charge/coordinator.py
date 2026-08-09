@@ -499,9 +499,14 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
         available = snap.pv_power - base_house
         snap.surplus = available
 
-        soc = snap.battery_soc if snap.battery_soc is not None else 50.0
+        # Unknown SOC: fail-safe as if the battery still needs charging
+        # (prefer home battery / avoid boost_car grid import assumptions).
+        soc_known = snap.battery_soc is not None
+        soc = float(snap.battery_soc) if soc_known else 0.0
         batt_headroom = max(0.0, self.battery_target_soc - soc)
-        batt_can_charge = batt_headroom > 0 and soc < self.battery_target_soc
+        batt_can_charge = (
+            soc_known and batt_headroom > 0 and soc < self.battery_target_soc
+        )
         batt_max = float(self.battery_max_charge_w) if batt_can_charge else 0.0
 
         # Total EV max across all chargers
