@@ -55,7 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 # querystring so browsers reload it after an integration update.
 FRONTEND_URL_BASE = "/solar_charge_static"
 FRONTEND_SCRIPT = "solar-charge-card.js"
-FRONTEND_CARD_VERSION = "0.12.10"
+FRONTEND_CARD_VERSION = "0.12.11"
 
 
 def _frontend_card_url() -> str:

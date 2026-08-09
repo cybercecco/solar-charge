@@ -415,7 +415,9 @@ class SolarChargeConfigFlow(ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(entry: ConfigEntry) -> OptionsFlow:
-        return SolarChargeOptionsFlow(entry)
+        # HA 2025.12+/2026.x injects config_entry on the flow; do not pass it
+        # into OptionsFlow.__init__ (config_entry is a read-only property).
+        return SolarChargeOptionsFlow()
 
 
 # ---------------------------------------------------------------------------
@@ -424,22 +426,31 @@ class SolarChargeConfigFlow(ConfigFlow, domain=DOMAIN):
 class SolarChargeOptionsFlow(OptionsFlow):
     """All data is modified here. Entry-level data is kept minimal."""
 
-    def __init__(self, entry: ConfigEntry) -> None:
-        self._entry = entry
-        self._data: dict[str, Any] = {**entry.data, **(entry.options or {})}
-        self._data.setdefault(CONF_CHARGERS, [])
-        self._data.setdefault(CONF_BATTERIES, [])
-        # Staging state for the sub-flows
+    def __init__(self) -> None:
+        # Staging state for the sub-flows. `_store` is filled lazily once HA
+        # has attached `self.config_entry` (not available during __init__).
+        self._store: dict[str, Any] | None = None
         self._charger_edit_idx: int | None = None
         self._battery_edit_idx: int | None = None
         self._preset_match: PresetMatch | None = None
         self._preset_capacity_kwh: float = 0.0
         self._preset_ranking: list[tuple[str, int]] | None = None
 
+    @property
+    def _data(self) -> dict[str, Any]:
+        """Mutable working copy of entry data+options."""
+        if self._store is None:
+            entry = self.config_entry
+            self._store = {**entry.data, **(entry.options or {})}
+            self._store.setdefault(CONF_CHARGERS, [])
+            self._store.setdefault(CONF_BATTERIES, [])
+        return self._store
+
     # ------------------------------------------------------------------
     # Main menu
     # ------------------------------------------------------------------
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        _ = self._data  # ensure config_entry is readable before showing menu
         return self.async_show_menu(
             step_id="init",
             menu_options=[
