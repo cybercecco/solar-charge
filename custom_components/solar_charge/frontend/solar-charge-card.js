@@ -10,7 +10,7 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.12";
+const CARD_VERSION = "0.12.13";
 
 /** Escape text for safe interpolation into HTML bodies. */
 function escapeHtml(value) {
@@ -2498,7 +2498,7 @@ class SolarChargeModeCardEditor extends HTMLElement {
             ([k, lbl]) => `
           <label>
             <span>${lbl}</span>
-            <input data-key="${k}" value="${this._config[k] ?? ""}" />
+            <input data-key="${escapeAttr(k)}" value="${escapeAttr(this._config[k] ?? "")}" />
           </label>`
           )
           .join("")}

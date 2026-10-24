@@ -55,7 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 # querystring so browsers reload it after an integration update.
 FRONTEND_URL_BASE = "/solar_charge_static"
 FRONTEND_SCRIPT = "solar-charge-card.js"
-FRONTEND_CARD_VERSION = "0.12.12"
+FRONTEND_CARD_VERSION = "0.12.13"
 # Keep frontend registration flags out of hass.data[DOMAIN] so entry bundles
 # (keyed by entry_id) are never mixed with booleans / metadata.
 _FRONTEND_DATA_KEY = f"{DOMAIN}_frontend"

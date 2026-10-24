@@ -20,7 +20,7 @@ def main_device_info(entry: ConfigEntry) -> DeviceInfo:
         manufacturer="Solar Charge",
         name=entry.title or "Solar Charge Balancer",
         model="Energy Flow Balancer",
-        sw_version="0.2.0",
+        sw_version="0.12.13",
     )
 
 

@@ -234,6 +234,7 @@
     },
     "binary_sensor": {
       "overconsumption": {"name": "Sovraconsumo"},
+      "control_error": {"name": "Errore controllo EV"},
       "exporting": {"name": "Export attivo"},
       "any_charging": {"name": "Ricarica in corso"},
       "charger_charging": {"name": "In ricarica"}

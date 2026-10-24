@@ -196,6 +196,10 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
             ),
         )
         self._last_total_reco: float = 0.0
+        # Latched by EvController after repeated failed wallbox writes.
+        # Read by the control_error binary sensor on the next coordinator tick.
+        self.actuation_fault: bool = False
+        self.actuation_fault_detail: str = ""
         self._per_charger_last_reco: dict[str, float] = {}
         self._per_charger_last_charging: dict[str, bool] = {}
         self._per_charger_boost: dict[str, bool] = {}
@@ -594,6 +598,7 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
         # instantaneous household draw must not exceed max_household_w.
         # `base_house` already excludes current EV draw, so the headroom
         # available to EVs is `cap - base_house`.
+        ev_cap: float | None = None
         if self.max_household_w > 0:
             ev_cap = max(0.0, self.max_household_w - base_house)
             if ev_total > ev_cap:
@@ -604,9 +609,16 @@ class SolarChargeCoordinator(DataUpdateCoordinator[FlowSnapshot]):
                 )
                 ev_total = ev_cap
 
-        # Global hysteresis
+        # Global hysteresis. Never let it restore a value above the cap:
+        # a prior recommendation within the hysteresis band would otherwise
+        # undo the clamp (e.g. 5000 W held when the cap just forced 4900 W).
         if ev_total > 0 and abs(ev_total - self._last_total_reco) < self.hysteresis:
-            ev_total = self._last_total_reco
+            restored = self._last_total_reco
+            if ev_cap is None or restored <= ev_cap:
+                ev_total = restored
+
+        if ev_cap is not None and ev_total > ev_cap:
+            ev_total = ev_cap
 
         self._distribute_to_chargers(snap, ev_total)
 

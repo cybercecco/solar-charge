@@ -28,6 +28,8 @@ _CURRENT_EPSILON = 0.5  # A
 _POWER_EPSILON = 100.0  # W
 _SWITCH_DOMAINS = frozenset({"switch", "input_boolean"})
 _NUMBER_DOMAINS = frozenset({"number", "input_number"})
+# Consecutive apply cycles with a failed write before latching the problem sensor.
+_FAULT_STREAK = 3
 
 
 class EvController:
@@ -49,6 +51,9 @@ class EvController:
         # Tracks the previous coordinator mode so we can detect a
         # MANUAL → other transition and immediately reapply control.
         self._prev_manual: bool = False
+        self._fail_streak: int = 0
+        self._fault_notified: bool = False
+        self._cycle_failed: bool = False
 
     @callback
     def async_start(self) -> None:
@@ -76,12 +81,15 @@ class EvController:
         self._apply_task = self.hass.async_create_task(self._apply(snap))
 
     async def _apply(self, snap: FlowSnapshot) -> None:
+        self._cycle_failed = False
         try:
             await self._apply_inner(snap)
         except asyncio.CancelledError:
             raise
         except Exception as err:  # noqa: BLE001
+            self._cycle_failed = True
             _LOGGER.warning("EV apply failed: %s", err)
+        self._record_cycle("" if not self._cycle_failed else "wallbox write failed")
 
     async def _apply_inner(self, snap: FlowSnapshot) -> None:
         # Manual mode: stay out of the way completely.
@@ -121,39 +129,127 @@ class EvController:
 
         should_charge = ch.recommended_power > 0
 
-        # Enable/disable switch with hysteresis
-        if switch_entity and self._last_switch.get(ch.id) != should_charge:
-            service = "turn_on" if should_charge else "turn_off"
-            if await self._call_switch(switch_entity, service):
-                self._last_switch[ch.id] = should_charge
+        # Enable/disable switch. Stop ignores hysteresis and retries until
+        # the entity actually reports off — a scheduled call that returns
+        # without raising is not proof the wallbox stopped.
+        if switch_entity:
+            if not should_charge:
+                if not self._switch_matches(switch_entity, False):
+                    ok = await self._call_switch(
+                        switch_entity, "turn_off", blocking=True
+                    )
+                    if ok and self._switch_matches(switch_entity, False):
+                        self._last_switch[ch.id] = False
+                    else:
+                        self._cycle_failed = True
+                        _LOGGER.warning(
+                            "Stop of %s not confirmed off", switch_entity
+                        )
+                else:
+                    self._last_switch[ch.id] = False
+            elif self._last_switch.get(ch.id) is not True:
+                ok = await self._call_switch(
+                    switch_entity, "turn_on", blocking=False
+                )
+                if ok:
+                    self._last_switch[ch.id] = True
+                else:
+                    self._cycle_failed = True
 
         if not should_charge:
             # Fail-safe stop: always drive current/power to 0 even when no
             # enable switch is configured (common for Tuya / OEM number-only
             # wallboxes that would otherwise keep the last setpoint).
+            # Cache the zero only after a confirmed write so a failure retries.
             if current_entity:
-                await self._set_number(current_entity, 0, blocking=True)
-                self._last_current[ch.id] = 0.0
+                if await self._set_number(current_entity, 0, blocking=True):
+                    self._last_current[ch.id] = 0.0
+                else:
+                    self._cycle_failed = True
             if power_entity:
-                await self._set_number(power_entity, 0, blocking=True)
-                self._last_power[ch.id] = 0.0
+                if await self._set_number(power_entity, 0, blocking=True):
+                    self._last_power[ch.id] = 0.0
+                else:
+                    self._cycle_failed = True
             return
 
         if current_entity:
             amps = max(ch.min_current, min(ch.max_current, round(ch.recommended_current)))
             prev = self._last_current.get(ch.id)
             if prev is None or abs(amps - prev) >= _CURRENT_EPSILON:
-                await self._set_number(current_entity, amps)
-                self._last_current[ch.id] = amps
+                if await self._set_number(current_entity, amps):
+                    self._last_current[ch.id] = amps
+                else:
+                    self._cycle_failed = True
 
         if power_entity:
             watts = round(ch.recommended_power)
             prev = self._last_power.get(ch.id)
             if prev is None or abs(watts - prev) >= _POWER_EPSILON:
-                await self._set_number(power_entity, watts)
-                self._last_power[ch.id] = watts
+                if await self._set_number(power_entity, watts):
+                    self._last_power[ch.id] = watts
+                else:
+                    self._cycle_failed = True
 
-    async def _call_switch(self, entity_id: str, service: str) -> bool:
+    def _switch_matches(self, entity_id: str, want_on: bool) -> bool:
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in ("unknown", "unavailable", ""):
+            return False
+        return (state.state == "on") is want_on
+
+    def _record_cycle(self, detail: str) -> None:
+        if not detail:
+            self._fail_streak = 0
+            if self.coordinator.actuation_fault:
+                self.coordinator.actuation_fault = False
+                self.coordinator.actuation_fault_detail = ""
+                if self._fault_notified:
+                    self._fault_notified = False
+                    self.hass.async_create_task(self._clear_fault_notification())
+            return
+        self._fail_streak += 1
+        if self._fail_streak < _FAULT_STREAK:
+            return
+        self.coordinator.actuation_fault = True
+        self.coordinator.actuation_fault_detail = detail
+        if self._fault_notified:
+            return
+        self._fault_notified = True
+        self.hass.async_create_task(self._notify_fault(detail))
+
+    async def _notify_fault(self, detail: str) -> None:
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Solar Charge: errore wallbox",
+                    "message": (
+                        "Scritture verso la colonnina fallite per "
+                        f"{_FAULT_STREAK} cicli consecutivi ({detail}). "
+                        "Il sensore «Errore controllo EV» è attivo."
+                    ),
+                    "notification_id": "solar_charge_actuation_fault",
+                },
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Could not raise actuation fault notification: %s", err)
+
+    async def _clear_fault_notification(self) -> None:
+        try:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "dismiss",
+                {"notification_id": "solar_charge_actuation_fault"},
+                blocking=False,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Could not dismiss actuation fault notification: %s", err)
+
+    async def _call_switch(
+        self, entity_id: str, service: str, *, blocking: bool = False
+    ) -> bool:
         if not isinstance(entity_id, str) or "." not in entity_id:
             _LOGGER.warning("Ignoring invalid switch entity_id: %s", entity_id)
             return False
@@ -168,7 +264,7 @@ class EvController:
             return False
         try:
             await self.hass.services.async_call(
-                domain, service, {"entity_id": entity_id}, blocking=False
+                domain, service, {"entity_id": entity_id}, blocking=blocking
             )
             return True
         except Exception as err:  # noqa: BLE001
@@ -177,16 +273,16 @@ class EvController:
 
     async def _set_number(
         self, entity_id: str, value: float, *, blocking: bool = False
-    ) -> None:
+    ) -> bool:
         if not isinstance(entity_id, str) or "." not in entity_id:
             _LOGGER.warning("Ignoring invalid number entity_id: %s", entity_id)
-            return
+            return False
         domain = entity_id.split(".", 1)[0]
         if domain not in _NUMBER_DOMAINS:
             _LOGGER.warning(
                 "Refusing to set_value on non-number entity %s", entity_id
             )
-            return
+            return False
         try:
             await self.hass.services.async_call(
                 domain,
@@ -194,5 +290,7 @@ class EvController:
                 {"entity_id": entity_id, "value": value},
                 blocking=blocking,
             )
+            return True
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Failed to set %s = %s: %s", entity_id, value, err)
+            return False

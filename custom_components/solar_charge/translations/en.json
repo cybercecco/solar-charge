@@ -219,6 +219,7 @@
     },
     "binary_sensor": {
       "overconsumption": {"name": "Over-consumption"},
+      "control_error": {"name": "EV control error"},
       "exporting": {"name": "Exporting"},
       "any_charging": {"name": "Charging"},
       "charger_charging": {"name": "Charging"}

@@ -19,6 +19,7 @@ from .entity import ChargerEntity, SolarChargeEntity
 
 GLOBAL_BINARY: tuple[tuple[str, str, BinarySensorDeviceClass | None], ...] = (
     ("overconsumption", "overconsumption", BinarySensorDeviceClass.PROBLEM),
+    ("control_error", "control_error", BinarySensorDeviceClass.PROBLEM),
     ("exporting", "exporting", BinarySensorDeviceClass.POWER),
     ("any_charging", "any_charging", BinarySensorDeviceClass.POWER),
 )
@@ -69,6 +70,8 @@ class GlobalBinary(SolarChargeEntity, BinarySensorEntity):
 
     @property
     def is_on(self) -> bool | None:
+        if self._sensor_key == "control_error":
+            return self.coordinator.actuation_fault
         snap = self.coordinator.data
         if snap is None:
             return None
