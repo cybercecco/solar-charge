@@ -10,7 +10,54 @@
  * `window.customCards` the moment it loads.
  */
 
-const CARD_VERSION = "0.12.13";
+const CARD_VERSION = "0.12.14";
+
+// Register both tags before any later statement. Lovelace waits 2s on
+// customElements.get("solar-charge-card") and then throws
+// "Custom element not found". The real methods are copied onto these
+// constructors once the implementation classes below have been evaluated;
+// a throw in between still leaves the tags defined.
+function _defineCard(name, ctor) {
+  try {
+    if (typeof customElements === "undefined" || customElements == null) return;
+    if (!customElements.get(name)) customElements.define(name, ctor);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error("[solar-charge-card] customElements.define failed:", name, err);
+  }
+}
+
+function _adoptCardImpl(PublicCtor, Impl) {
+  const skipProto = new Set(["constructor"]);
+  for (const key of Object.getOwnPropertyNames(Impl.prototype)) {
+    if (skipProto.has(key)) continue;
+    const desc = Object.getOwnPropertyDescriptor(Impl.prototype, key);
+    if (desc) Object.defineProperty(PublicCtor.prototype, key, desc);
+  }
+  const skipStatic = new Set(["prototype", "length", "name", "arguments", "caller"]);
+  for (const key of Object.getOwnPropertyNames(Impl)) {
+    if (skipStatic.has(key)) continue;
+    const desc = Object.getOwnPropertyDescriptor(Impl, key);
+    if (desc) Object.defineProperty(PublicCtor, key, desc);
+  }
+}
+
+class SolarChargeCard extends HTMLElement {
+  constructor() {
+    super();
+    if (typeof this._solarChargeInit === "function") this._solarChargeInit();
+  }
+}
+
+class SolarChargeModeCard extends HTMLElement {
+  constructor() {
+    super();
+    if (typeof this._solarChargeInit === "function") this._solarChargeInit();
+  }
+}
+
+_defineCard("solar-charge-card", SolarChargeCard);
+_defineCard("solar-charge-mode-card", SolarChargeModeCard);
 
 /** Escape text for safe interpolation into HTML bodies. */
 function escapeHtml(value) {
@@ -27,40 +74,43 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/`/g, "&#96;");
 }
 
-// eslint-disable-next-line no-console
-console.info(
-  `%c SOLAR-CHARGE-CARD %c v${CARD_VERSION} `,
-  "color:white;background:#1f6feb;font-weight:700;padding:2px 6px;border-radius:3px 0 0 3px;",
-  "color:#1f6feb;background:#0d1117;padding:2px 6px;border-radius:0 3px 3px 0;"
-);
+// Picker metadata is best-effort. A throw here must not skip the classes
+// that fill in the elements already registered above.
+try {
+  // eslint-disable-next-line no-console
+  console.info(
+    `%c SOLAR-CHARGE-CARD %c v${CARD_VERSION} `,
+    "color:white;background:#1f6feb;font-weight:700;padding:2px 6px;border-radius:3px 0 0 3px;",
+    "color:#1f6feb;background:#0d1117;padding:2px 6px;border-radius:0 3px 3px 0;"
+  );
 
-// ---------------------------------------------------------------------------
-// Push into the card picker immediately. Doing this BEFORE any class
-// definitions means the picker will always list us, even if something later
-// in the script were to fail. We still guard against duplicate pushes
-// because the script may be loaded both via add_extra_js_url and as a
-// Lovelace resource.
-// ---------------------------------------------------------------------------
-window.customCards = window.customCards || [];
-if (!window.customCards.some((c) => c.type === "solar-charge-card")) {
-  window.customCards.push({
-    type: "solar-charge-card",
-    name: "Solar Charge Card",
-    description:
-      "Tesla-like energy flow graph for the Solar Charge Balancer integration.",
-    preview: true,
-    documentationURL: "https://github.com/cybercecco/solar-charge",
-  });
-}
-if (!window.customCards.some((c) => c.type === "solar-charge-mode-card")) {
-  window.customCards.push({
-    type: "solar-charge-mode-card",
-    name: "Solar Charge Mode Selector",
-    description:
-      "Compact button strip to pick the Solar Charge operating mode (off/eco/balanced/boost_car/boost_battery/fast).",
-    preview: true,
-    documentationURL: "https://github.com/cybercecco/solar-charge",
-  });
+  // The script may be loaded both via add_extra_js_url and as a Lovelace
+  // resource, so guard against duplicate picker entries.
+  window.customCards = window.customCards || [];
+  if (!Array.isArray(window.customCards)) window.customCards = [];
+  if (!window.customCards.some((c) => c.type === "solar-charge-card")) {
+    window.customCards.push({
+      type: "solar-charge-card",
+      name: "Solar Charge Card",
+      description:
+        "Tesla-like energy flow graph for the Solar Charge Balancer integration.",
+      preview: true,
+      documentationURL: "https://github.com/cybercecco/solar-charge",
+    });
+  }
+  if (!window.customCards.some((c) => c.type === "solar-charge-mode-card")) {
+    window.customCards.push({
+      type: "solar-charge-mode-card",
+      name: "Solar Charge Mode Selector",
+      description:
+        "Compact button strip to pick the Solar Charge operating mode (off/eco/balanced/boost_car/boost_battery/fast).",
+      preview: true,
+      documentationURL: "https://github.com/cybercecco/solar-charge",
+    });
+  }
+} catch (err) {
+  // eslint-disable-next-line no-console
+  console.error("[solar-charge-card] picker registration failed:", err);
 }
 
 // ---------------------------------------------------------------------------
@@ -415,9 +465,8 @@ const curvePath = (x1, y1, x2, y2) => {
 // ---------------------------------------------------------------------------
 // Main card
 // ---------------------------------------------------------------------------
-class SolarChargeCard extends HTMLElement {
-  constructor() {
-    super();
+class _SolarChargeCardImpl extends HTMLElement {
+  _solarChargeInit() {
     this.attachShadow({ mode: "open" });
     this._mounted = false;
     this._config = null;
@@ -1993,11 +2042,10 @@ class SolarChargeCard extends HTMLElement {
   }
 }
 
-// Register the main card eagerly, before any subsequent class declaration
-// so a later parse/runtime failure cannot prevent this registration.
-if (!customElements.get("solar-charge-card")) {
-  customElements.define("solar-charge-card", SolarChargeCard);
-}
+// Copy the implementation onto the constructor registered at the top of
+// this file, before the editor class (which can throw) is evaluated.
+_adoptCardImpl(SolarChargeCard, _SolarChargeCardImpl);
+_defineCard("solar-charge-card", SolarChargeCard);
 
 // ---------------------------------------------------------------------------
 // Visual editor (simple HTML form — no Lit dependency either)
@@ -2148,9 +2196,8 @@ if (!customElements.get("solar-charge-card-editor")) {
 // up; tapping any other one calls `select.select_option`. Icons are
 // inline SVG paths so there's no dependency on Material icons.
 // ---------------------------------------------------------------------------
-class SolarChargeModeCard extends HTMLElement {
-  constructor() {
-    super();
+class _SolarChargeModeCardImpl extends HTMLElement {
+  _solarChargeInit() {
     this.attachShadow({ mode: "open" });
     this._config = null;
     this._hass = null;
@@ -2450,9 +2497,8 @@ class SolarChargeModeCard extends HTMLElement {
   }
 }
 
-if (!customElements.get("solar-charge-mode-card")) {
-  customElements.define("solar-charge-mode-card", SolarChargeModeCard);
-}
+_adoptCardImpl(SolarChargeModeCard, _SolarChargeModeCardImpl);
+_defineCard("solar-charge-mode-card", SolarChargeModeCard);
 
 class SolarChargeModeCardEditor extends HTMLElement {
   constructor() {
@@ -2526,20 +2572,67 @@ class SolarChargeModeCardEditor extends HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// Safe registration (idempotent: script may load twice)
+// Registration.
+//
+// HA 2026 evaluates extra modules in parallel with frontend app.js. app.js
+// then replaces window.customElements with an empty scoped registry. This
+// file is smaller than app.js, so its top-level define() usually lands on
+// the native registry and vanishes when the registry is swapped. The module
+// is not evaluated again, and Lovelace rejects after 2s with
+// "Custom element not found". Re-bind whenever the registry object changes.
 // ---------------------------------------------------------------------------
-if (!customElements.get("solar-charge-card")) {
-  customElements.define("solar-charge-card", SolarChargeCard);
+function registerSolarChargeElements() {
+  [
+    ["solar-charge-card", SolarChargeCard],
+    ["solar-charge-card-editor", SolarChargeCardEditor],
+    ["solar-charge-mode-card", SolarChargeModeCard],
+    ["solar-charge-mode-card-editor", SolarChargeModeCardEditor],
+  ].forEach(([name, ctor]) => {
+    try {
+      if (!customElements.get(name)) customElements.define(name, ctor);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[solar-charge-card] customElements.define failed:", name, err);
+    }
+  });
 }
-if (!customElements.get("solar-charge-card-editor")) {
-  customElements.define("solar-charge-card-editor", SolarChargeCardEditor);
-}
-if (!customElements.get("solar-charge-mode-card")) {
-  customElements.define("solar-charge-mode-card", SolarChargeModeCard);
-}
-if (!customElements.get("solar-charge-mode-card-editor")) {
-  customElements.define(
+
+let solarChargeRegistry = null;
+function syncSolarChargeElements() {
+  const registry = window.customElements;
+  if (!registry || registry === solarChargeRegistry) return;
+  registerSolarChargeElements();
+  const ready = [
+    "solar-charge-card",
+    "solar-charge-card-editor",
+    "solar-charge-mode-card",
     "solar-charge-mode-card-editor",
-    SolarChargeModeCardEditor
-  );
+  ].every((name) => customElements.get(name));
+  if (ready) solarChargeRegistry = registry;
+}
+
+syncSolarChargeElements();
+
+if (typeof window.setInterval === "function") {
+  const registryWatchStarted = Date.now();
+  const registryWatch = window.setInterval(() => {
+    syncSolarChargeElements();
+    let scoped = false;
+    try {
+      scoped = !Function.prototype.toString
+        .call(window.HTMLElement)
+        .includes("[native code]");
+    } catch (err) {
+      scoped = false;
+    }
+    const settled =
+      scoped &&
+      window.customElements === solarChargeRegistry &&
+      !!customElements.get("solar-charge-card") &&
+      !!customElements.get("solar-charge-mode-card");
+    if (settled || Date.now() - registryWatchStarted > 15000) {
+      syncSolarChargeElements();
+      window.clearInterval(registryWatch);
+    }
+  }, 50);
 }

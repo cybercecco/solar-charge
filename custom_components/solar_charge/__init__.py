@@ -55,7 +55,7 @@ _LOGGER = logging.getLogger(__name__)
 # querystring so browsers reload it after an integration update.
 FRONTEND_URL_BASE = "/solar_charge_static"
 FRONTEND_SCRIPT = "solar-charge-card.js"
-FRONTEND_CARD_VERSION = "0.12.13"
+FRONTEND_CARD_VERSION = "0.12.14"
 # Keep frontend registration flags out of hass.data[DOMAIN] so entry bundles
 # (keyed by entry_id) are never mixed with booleans / metadata.
 _FRONTEND_DATA_KEY = f"{DOMAIN}_frontend"
@@ -65,13 +65,69 @@ def _frontend_card_url() -> str:
     return f"{FRONTEND_URL_BASE}/{FRONTEND_SCRIPT}?v={FRONTEND_CARD_VERSION}"
 
 
+def _resource_url_path(resource_url: str) -> str:
+    """Path of a Lovelace resource URL, without query, fragment, or host."""
+    path = (resource_url or "").strip().split("?", 1)[0].split("#", 1)[0]
+    scheme = path.find("://")
+    if scheme != -1:
+        slash = path.find("/", scheme + 3)
+        path = path[slash:] if slash != -1 else ""
+    return path
+
+
+def _is_solar_charge_card_resource(resource_url: str) -> bool:
+    """True for this card script, including legacy URLs that now 404."""
+    return _resource_url_path(resource_url).rsplit("/", 1)[-1] == FRONTEND_SCRIPT
+
+
+def _resource_item_url(item: object) -> str:
+    if isinstance(item, dict):
+        return str(item.get("url") or "")
+    return str(getattr(item, "url", "") or "")
+
+
+def _resource_item_id(item: object) -> str | None:
+    if isinstance(item, dict):
+        item_id = item.get("id")
+    else:
+        item_id = getattr(item, "id", None)
+    return str(item_id) if item_id else None
+
+
+async def _async_write_lovelace_resource(resources, url: str, item_id: str | None = None) -> None:
+    """Create or update a module resource.
+
+    HA 2026 storage collections accept ``res_type`` (mapped to ``type``).
+    Older callers and a few 2026 builds validate ``type`` directly, so try
+    that shape if the first payload is rejected.
+    """
+    payloads = (
+        {"url": url, "res_type": "module"},
+        {"url": url, "type": "module"},
+    )
+    last_err: Exception | None = None
+    for payload in payloads:
+        try:
+            if item_id is None:
+                await resources.async_create_item(payload)
+            else:
+                await resources.async_update_item(item_id, payload)
+            return
+        except Exception as err:  # pragma: no cover - version-dependent schema
+            last_err = err
+    if last_err is not None:
+        raise last_err
+    raise RuntimeError("Lovelace resource write failed")
+
+
 async def _async_register_lovelace_resource(hass: HomeAssistant, url: str) -> bool:
     """Register the card as a persistent Lovelace resource (storage mode).
 
-    This is what makes the card appear in the *Add card* picker: Lovelace
-    enumerates resources at dashboard load and calls the scripts; only
-    after one of them registers a custom element does the custom card
-    become selectable.
+    Lovelace loads every resource URL at dashboard open. A stale entry on
+    ``/hacsfiles/...`` or ``/local/solar-charge-card/...`` 404s, and the
+    card editor then reports "Custom element not found" after 2s even if
+    the extra-module import is slow. Point every copy of this script at
+    ``/solar_charge_static/solar-charge-card.js?v=<version>``.
 
     Returns True if we successfully registered or found an existing entry.
     """
@@ -102,29 +158,54 @@ async def _async_register_lovelace_resource(hass: HomeAssistant, url: str) -> bo
         if hasattr(resources, "async_load") and not getattr(resources, "loaded", False):
             await resources.async_load()
 
-        items_iter = (
+        raw_items = (
             resources.async_items()
             if hasattr(resources, "async_items")
             else list(getattr(resources, "data", {}).values())
         )
-        base_url = url.split("?", 1)[0]
-        for item in items_iter:
-            existing = item.get("url", "")
-            if existing.split("?", 1)[0] == base_url:
-                if existing != url:
-                    # URL changed (version bump) → update so browsers refetch.
-                    try:
-                        await resources.async_update_item(
-                            item["id"], {"url": url, "res_type": "module"}
-                        )
-                        _LOGGER.info(
-                            "Solar Charge Lovelace resource URL updated to %s", url
-                        )
-                    except Exception as err:  # pragma: no cover
-                        _LOGGER.debug("Could not update Lovelace resource: %s", err)
-                return True
+        if hasattr(raw_items, "__await__"):
+            raw_items = await raw_items
+        if isinstance(raw_items, dict):
+            items = list(raw_items.values())
+        else:
+            items = list(raw_items or [])
 
-        await resources.async_create_item({"url": url, "res_type": "module"})
+        has_canonical = False
+        for item in items:
+            existing = _resource_item_url(item)
+            if not _is_solar_charge_card_resource(existing):
+                continue
+            if existing == url:
+                has_canonical = True
+                continue
+            item_id = _resource_item_id(item)
+            if not item_id:
+                _LOGGER.warning(
+                    "Solar Charge Lovelace resource %s has no id; cannot retarget it",
+                    existing,
+                )
+                continue
+            try:
+                await _async_write_lovelace_resource(resources, url, item_id)
+            except Exception as err:  # pragma: no cover
+                _LOGGER.warning(
+                    "Could not update Lovelace resource %s to %s: %s",
+                    existing,
+                    url,
+                    err,
+                )
+                continue
+            has_canonical = True
+            _LOGGER.info(
+                "Solar Charge Lovelace resource URL updated from %s to %s",
+                existing,
+                url,
+            )
+
+        if has_canonical:
+            return True
+
+        await _async_write_lovelace_resource(resources, url)
         _LOGGER.info("Solar Charge Lovelace resource registered: %s", url)
         return True
     except Exception as err:  # pragma: no cover - defensive
@@ -140,51 +221,64 @@ async def _async_register_frontend(hass: HomeAssistant) -> None:
       2. extra JS URL  -> included in every frontend page (YAML-mode fallback).
       3. Lovelace resource -> persistent entry shown in the *Add card* picker.
     """
-    if hass.data.get(_FRONTEND_DATA_KEY, {}).get("registered"):
-        return
-
-    frontend_dir = str(Path(__file__).parent / "frontend")
-
-    # 1) Static path (HA 2024.7+ prefers async_register_static_paths)
-    try:
-        from homeassistant.components.http import StaticPathConfig  # type: ignore
-
-        await hass.http.async_register_static_paths(
-            [StaticPathConfig(FRONTEND_URL_BASE, frontend_dir, cache_headers=False)]
-        )
-    except ImportError:
-        await hass.async_add_executor_job(
-            hass.http.register_static_path,
-            FRONTEND_URL_BASE,
-            frontend_dir,
-            False,  # cache_headers
-        )
-
     url = _frontend_card_url()
+    state = hass.data.setdefault(_FRONTEND_DATA_KEY, {})
 
-    # 2) Extra JS URL (YAML mode + defensive belt-and-braces for storage mode)
-    add_extra_js_url(hass, url)
+    # Static path and extra JS are process-wide. Lovelace resources are
+    # re-checked on every integration reload so a stored 404 URL is rewritten
+    # without a full Home Assistant restart.
+    if not state.get("registered"):
+        frontend_dir = str(Path(__file__).parent / "frontend")
+
+        # 1) Static path (HA 2024.7+ prefers async_register_static_paths)
+        try:
+            from homeassistant.components.http import StaticPathConfig  # type: ignore
+
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(FRONTEND_URL_BASE, frontend_dir, cache_headers=False)]
+            )
+        except ImportError:
+            await hass.async_add_executor_job(
+                hass.http.register_static_path,
+                FRONTEND_URL_BASE,
+                frontend_dir,
+                False,  # cache_headers
+            )
+
+        # 2) Extra JS URL (YAML mode + defensive belt-and-braces for storage mode)
+        add_extra_js_url(hass, url)
+
+        state["registered"] = True
+        _LOGGER.info(
+            "Solar Charge Lovelace card served at %s (v%s)",
+            url,
+            FRONTEND_CARD_VERSION,
+        )
 
     # 3) Persistent Lovelace resource (storage mode): this is what makes the
     #    card appear in the picker on dashboards that use the UI editor.
     ok = await _async_register_lovelace_resource(hass, url)
-    if not ok:
-        # Lovelace may not be ready yet (common right after a HA core update).
-        retries = {"count": 0}
+    if ok:
+        state.pop("resource_retry", None)
+        return
+    if state.get("resource_retry"):
+        return
 
-        async def _retry_register(_now) -> None:
-            retries["count"] += 1
-            if await _async_register_lovelace_resource(hass, url):
-                return
-            if retries["count"] < 24:
-                async_call_later(hass, 5, _retry_register)
+    # Lovelace may not be ready yet (common right after a HA core update).
+    state["resource_retry"] = True
+    retries = {"count": 0}
 
-        async_call_later(hass, 5, _retry_register)
+    async def _retry_register(_now) -> None:
+        retries["count"] += 1
+        if await _async_register_lovelace_resource(hass, url):
+            state["resource_retry"] = False
+            return
+        if retries["count"] < 24:
+            async_call_later(hass, 5, _retry_register)
+            return
+        state["resource_retry"] = False
 
-    hass.data.setdefault(_FRONTEND_DATA_KEY, {})["registered"] = True
-    _LOGGER.info(
-        "Solar Charge Lovelace card served at %s (v%s)", url, FRONTEND_CARD_VERSION
-    )
+    async_call_later(hass, 5, _retry_register)
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
